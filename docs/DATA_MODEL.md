@@ -60,4 +60,5 @@ Darts sind als Zahl codiert, weil Firestore **keine verschachtelten Arrays** erl
 ## Indizes
 
 `firestore.indexes.json` enthält den Collection-Group-Index `members.uid` für die Suche nach
-eigenen Turniermitgliedschaften sowie die Indizes für die vorhandenen Turnier- und Spielabfragen.
+eigenen Turniermitgliedschaften sowie einen zusammengesetzten Index für Spielabfragen mit Turnier-ID
+und Änderungsdatum.

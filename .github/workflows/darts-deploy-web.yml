@@ -1,12 +1,12 @@
 name: Darts Manager – Deploy (Firebase Hosting)
 
 # Baut die Flutter-Webanwendung und veröffentlicht sie auf Firebase Hosting.
-#  * Push auf main      -> Live-Kanal
+#  * Push auf main      -> Auth, Firestore, dann Live-Kanal
 #  * Pull Request       -> Vorschau-Kanal (7 Tage)
-#  * workflow_dispatch  -> optional zusätzlich Rules/Indizes/Functions deployen
+#  * workflow_dispatch  -> optional zusätzlich Functions deployen (nur main)
 #
 # Benötigte Repository-Secrets (Settings → Secrets and variables → Actions):
-#   FIREBASE_SERVICE_ACCOUNT   JSON-Schlüssel eines Dienstkontos (Hosting-/Firestore-Rechte)
+#   FIREBASE_SERVICE_ACCOUNT   JSON-Schlüssel eines Dienstkontos (Hosting, Firestore, Firebase Auth-Konfiguration)
 #   FIREBASE_PROJECT_ID, FIREBASE_API_KEY, FIREBASE_APP_ID,
 #   FIREBASE_MESSAGING_SENDER_ID, FIREBASE_AUTH_DOMAIN, FIREBASE_STORAGE_BUCKET
 # Optional (Repository-Variable): APP_BASE_URL  (z. B. https://dein-projekt.web.app/)
@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       deploy_backend:
-        description: 'Firestore-Rules, Indizes und Functions mit deployen'
+        description: 'Zusätzlich Cloud Functions bereitstellen'
         type: boolean
         default: false
 
@@ -36,7 +36,10 @@ jobs:
     name: Build & Deploy
     runs-on: ubuntu-latest
     # Fork-PRs haben keinen Zugriff auf Secrets
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       pull-requests: write
@@ -61,8 +64,72 @@ jobs:
             --dart-define=FIREBASE_STORAGE_BUCKET=${{ secrets.FIREBASE_STORAGE_BUCKET }} \
             --dart-define=APP_BASE_URL=${{ vars.APP_BASE_URL }}
 
+      - name: Firebase für den Live-Kanal vorbereiten
+        if: github.ref == 'refs/heads/main'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          project_id: ${{ secrets.FIREBASE_PROJECT_ID }}
+
+      - name: Anonyme Anmeldung für Board-Tablets prüfen
+        if: github.ref == 'refs/heads/main'
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.error
+          import urllib.request
+
+          project = os.environ['FIREBASE_PROJECT_ID']
+          token = subprocess.check_output(
+              ['gcloud', 'auth', 'application-default', 'print-access-token'], text=True
+          ).strip()
+          url = f'https://identitytoolkit.googleapis.com/admin/v2/projects/{project}/config'
+
+          def request(method, url, body=None):
+              headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+              data = json.dumps(body).encode() if body is not None else None
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers, method=method)) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'Firebase Authentication {method}: HTTP {error.code}') from None
+
+          if not request('GET', url).get('signIn', {}).get('anonymous', {}).get('enabled'):
+              request('PATCH', url + '?updateMask=signIn.anonymous.enabled',
+                      {'signIn': {'anonymous': {'enabled': True}}})
+          if not request('GET', url).get('signIn', {}).get('anonymous', {}).get('enabled'):
+              raise SystemExit('Anonyme Firebase-Anmeldung ist weiterhin deaktiviert.')
+          print('Anonyme Firebase-Anmeldung ist aktiviert.')
+          PY
+
+      - name: Firestore-Regeln und Indizes bereitstellen
+        if: github.ref == 'refs/heads/main'
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: npx --yes firebase-tools@13 deploy --only firestore --project "$FIREBASE_PROJECT_ID" --non-interactive
+
+      - name: Auf den Mitgliedschaftsindex warten
+        if: github.ref == 'refs/heads/main'
+        timeout-minutes: 15
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          index_url="https://firestore.googleapis.com/v1/projects/$FIREBASE_PROJECT_ID/databases/(default)/collectionGroups/members/fields/uid"
+          until curl -fsS --max-time 20 -H "Authorization: Bearer $(gcloud auth application-default print-access-token)" "$index_url" |
+            jq -e 'any(.indexConfig.indexes[]?; .queryScope == "COLLECTION_GROUP" and .state == "READY")' > /dev/null; do
+            sleep 15
+          done
+
+      - name: Stand für die Live-Prüfung kennzeichnen
+        if: github.ref == 'refs/heads/main'
+        run: printf '{"commit":"%s"}\n' "$GITHUB_SHA" > build/web/deployment.json
+
       - name: Deploy (Live-Kanal)
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
@@ -81,13 +148,10 @@ jobs:
           expires: 7d
           entryPoint: .
 
-      - name: Rules, Indizes und Functions deployen
-        if: github.event_name == 'workflow_dispatch' && inputs.deploy_backend
+      - name: Cloud Functions bereitstellen
+        if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deploy_backend
         env:
-          GCP_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
         run: |
-          echo "$GCP_SA" > "$RUNNER_TEMP/sa.json"
-          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
           npm --prefix functions ci
-          npx --yes firebase-tools@13 deploy --only firestore,functions --project "${{ secrets.FIREBASE_PROJECT_ID }}" --non-interactive
-          rm -f "$RUNNER_TEMP/sa.json"
+          npx --yes firebase-tools@13 deploy --only functions --project "$FIREBASE_PROJECT_ID" --non-interactive
