@@ -8,7 +8,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc, addDoc, collection, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, addDoc, collection, collectionGroup, deleteDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
 
 let env;
 
@@ -44,6 +44,9 @@ function match(over = {}) {
 
 const db = (uid) => env.authenticatedContext(uid).firestore();
 const anon = () => env.unauthenticatedContext().firestore();
+const guest = () => env.authenticatedContext('guest', {
+  firebase: { sign_in_provider: 'anonymous' },
+}).firestore();
 
 before(async () => {
   env = await initializeTestEnvironment({
@@ -64,7 +67,7 @@ beforeEach(async () => {
     await setDoc(doc(f, 'tournaments/t1'), tournament());
     await setDoc(doc(f, 'tournaments/t1/members/dir'), { uid: 'dir', name: 'dir', role: 'director' });
     await setDoc(doc(f, 'tournaments/t1/members/scorer'), { uid: 'scorer', name: 'scorer', role: 'scorer' });
-    await setDoc(doc(f, 'tournaments/t2'), tournament({ id: 't2', name: 'Anderes', isPublic: true }));
+    await setDoc(doc(f, 'tournaments/t2'), tournament({ id: 't2', name: 'Anderes', isPublic: true, inviteCode: 'PUB234' }));
     await setDoc(doc(f, 'tournaments/t2/members/other'), { uid: 'other', name: 'other', role: 'scorer' });
     await setDoc(doc(f, 'matches/m1'), match());
   });
@@ -107,6 +110,9 @@ describe('Turniere', () => {
   });
   it('Selbstanmeldung: genau man selbst, nur in der Anmeldephase', async () => {
     const me = { id: 'pl-pl', name: 'pl', seed: null };
+    await assertFails(updateDoc(doc(db('pl'), 'tournaments/t1'), { registrations: [me], version: 2 }));
+    await assertSucceeds(setDoc(doc(db('pl'), 'tournaments/t1/members/pl'),
+      { uid: 'pl', name: 'pl', role: 'player', inviteCode: 'ABC234' }));
     await assertSucceeds(updateDoc(doc(db('pl'), 'tournaments/t1'), { registrations: [me], version: 2 }));
     // fremden Spieler eintragen
     await assertFails(updateDoc(doc(db('other'), 'tournaments/t1'), {
@@ -133,10 +139,25 @@ describe('Turniere', () => {
     await assertFails(deleteDoc(doc(db('dir'), 'tournaments/t1')));
     await assertSucceeds(deleteDoc(doc(db('admin'), 'tournaments/t1')));
   });
-  it('Lesen: Angemeldete alles, Anonyme nur öffentliche', async () => {
-    await assertSucceeds(getDoc(doc(db('pl'), 'tournaments/t1')));
-    await assertSucceeds(getDoc(doc(anon(), 'tournaments/t2')));
-    await assertFails(getDoc(doc(anon(), 'tournaments/t1')));
+  it('Öffentliche Listen funktionieren; private Daten sind nur für Mitglieder und Admins lesbar', async () => {
+    for (const f of [db('pl'), guest(), anon()]) {
+      await assertFails(getDoc(doc(f, 'tournaments/t1')));
+      await assertFails(getDoc(doc(f, 'matches/m1')));
+      await assertSucceeds(getDoc(doc(f, 'tournaments/t2')));
+      const visible = await assertSucceeds(getDocs(query(collection(f, 'tournaments'),
+        where('isPublic', '==', true))));
+      assert.deepEqual(visible.docs.map((d) => d.id), ['t2']);
+      await assertSucceeds(getDocs(query(collection(f, 'matches'), where('tournamentId', '==', 't2'),
+        where('isPublic', '==', true))));
+    }
+    await assertFails(getDocs(collection(db('pl'), 'matches')));
+    await assertSucceeds(getDoc(doc(db('admin'), 'tournaments/t1')));
+    await assertSucceeds(getDoc(doc(db('dir'), 'tournaments/t1')));
+    await assertSucceeds(getDocs(query(collection(db('dir'), 'matches'), where('tournamentId', '==', 't1'))));
+    const memberships = await assertSucceeds(getDocs(query(collectionGroup(db('dir'), 'members'),
+      where('uid', '==', 'dir'))));
+    assert.deepEqual(memberships.docs.map((d) => d.ref.path), ['tournaments/t1/members/dir']);
+    await assertFails(getDocs(query(collectionGroup(db('dir'), 'members'), where('uid', '==', 'scorer'))));
   });
   it('Anonyme können nie schreiben', async () => {
     await assertFails(setDoc(doc(anon(), 'tournaments/x'), tournament({ id: 'x' })));
@@ -146,9 +167,29 @@ describe('Turniere', () => {
 
 describe('Turnier-Mitglieder', () => {
   it('Spieler kann sich nicht zum Schreiber machen', async () => {
-    await assertSucceeds(setDoc(doc(db('pl'), 'tournaments/t1/members/pl'), { uid: 'pl', name: 'pl', role: 'player' }));
+    const player = { uid: 'pl', name: 'pl', role: 'player' };
+    await assertFails(setDoc(doc(db('pl'), 'tournaments/t1/members/pl'), player));
+    await assertFails(setDoc(doc(db('pl'), 'tournaments/t1/members/pl'), { ...player, inviteCode: 'WRONG1' }));
+    await assertFails(setDoc(doc(guest(), 'tournaments/t1/members/guest'),
+      { ...player, uid: 'guest', inviteCode: 'ABC234' }));
+    await assertSucceeds(setDoc(doc(db('pl'), 'tournaments/t1/members/pl'),
+      { ...player, inviteCode: 'ABC234' }));
+    await assertSucceeds(getDoc(doc(db('pl'), 'tournaments/t1')));
+    await assertSucceeds(getDoc(doc(db('pl'), 'matches/m1')));
     await assertFails(setDoc(doc(db('other'), 'tournaments/t1/members/other'), { uid: 'other', name: 'o', role: 'scorer' }));
     await assertFails(setDoc(doc(db('other'), 'tournaments/t1/members/other'), { uid: 'other', name: 'o', role: 'director' }));
+  });
+  it('Einladungsindex wird zusammen mit einem neuen Turnier angelegt und ist nicht auflistbar', async () => {
+    const f = db('admin');
+    const batch = writeBatch(f);
+    batch.set(doc(f, 'tournaments/t3'), tournament({ id: 't3', inviteCode: 'NEW234' }));
+    batch.set(doc(f, 'tournament_invites/NEW234'), { tournamentId: 't3' });
+    await assertSucceeds(batch.commit());
+    await assertFails(setDoc(doc(db('other'), 'tournament_invites/ABC234'), { tournamentId: 't1' }));
+    await assertFails(setDoc(doc(f, 'tournament_invites/WRONG1'), { tournamentId: 't3' }));
+    await assertFails(getDocs(collection(db('pl'), 'tournament_invites')));
+    await assertFails(getDoc(doc(guest(), 'tournament_invites/NEW234')));
+    await assertSucceeds(getDoc(doc(db('pl'), 'tournament_invites/NEW234')));
   });
   it('bestehende Rolle kann nicht selbst überschrieben werden', async () => {
     await assertFails(setDoc(doc(db('scorer'), 'tournaments/t1/members/scorer'), { uid: 'scorer', name: 's', role: 'player' }));
@@ -184,6 +225,17 @@ describe('Begegnungen und gleichzeitige Eingaben', () => {
     await assertFails(updateDoc(doc(db('scorer'), 'matches/m1'), { status: 'confirmed', version: 2 }));
     await assertSucceeds(updateDoc(doc(db('scorer'), 'matches/m1'), { status: 'awaitingConfirmation', version: 2 }));
     await assertSucceeds(updateDoc(doc(db('dir'), 'matches/m1'), { status: 'confirmed', version: 3 }));
+  });
+  it('Korrektur und Annullierung bleiben der Turnierleitung vorbehalten', async () => {
+    await env.withSecurityRulesDisabled((c) => updateDoc(doc(c.firestore(), 'matches/m1'),
+      { status: 'confirmed', winnerId: 'a' }));
+    const correction = { correction: { legsA: 0, legsB: 1, winnerIndex: 1 }, winnerId: 'b', version: 2 };
+    await assertFails(updateDoc(doc(db('scorer'), 'matches/m1'), correction));
+    await assertFails(updateDoc(doc(db('dir'), 'matches/m1'), { ...correction, winnerId: 'a' }));
+    await assertSucceeds(updateDoc(doc(db('dir'), 'matches/m1'), correction));
+    await assertFails(updateDoc(doc(db('scorer'), 'matches/m1'), { status: 'voided', version: 3 }));
+    await assertSucceeds(updateDoc(doc(db('dir'), 'matches/m1'), { status: 'voided', version: 3 }));
+    await assertFails(updateDoc(doc(db('dir'), 'matches/m1'), { status: 'confirmed', version: 4 }));
   });
   it('Plausibilität: Punkte 0..180, Darts 1..3, nur eine Aufnahme je Schreibvorgang', async () => {
     const ref = doc(db('scorer'), 'matches/m1');
@@ -227,6 +279,7 @@ describe('Begegnungen und gleichzeitige Eingaben', () => {
 describe('Spieler und Audit-Log', () => {
   it('Spielerprofile: eigenes bearbeiten, fremdes nicht', async () => {
     await assertSucceeds(setDoc(doc(db('pl'), 'players/pl-pl'), { id: 'pl-pl', name: 'pl', uid: 'pl', favoriteDouble: null }));
+    await assertFails(getDoc(doc(guest(), 'players/pl-pl')));
     await assertSucceeds(updateDoc(doc(db('pl'), 'players/pl-pl'), { favoriteDouble: 16 }));
     await assertFails(updateDoc(doc(db('other'), 'players/pl-pl'), { favoriteDouble: 20 }));
     await assertFails(setDoc(doc(db('other'), 'players/x'), { id: 'x', name: 'x', uid: 'pl' })); // fremde uid
@@ -245,5 +298,114 @@ describe('Spieler und Audit-Log', () => {
   it('unbekannte Collections sind gesperrt', async () => {
     await assertFails(setDoc(doc(db('admin'), 'foo/bar'), { a: 1 }));
     await assertFails(getDoc(doc(db('admin'), 'foo/bar')));
+  });
+});
+
+describe('Board-Tablet', () => {
+  const code = 'abcdefghijklmnopqrst';
+  const stationPath = 'tournaments/t1/tablets/b1';
+  const location = { tournamentId: 't1', boardId: 'b1', boardIndex: 0 };
+
+  async function prepare() {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const f = ctx.firestore();
+      await updateDoc(doc(f, 'tournaments/t1'), {
+        boards: [
+          { id: 'b1', name: 'Board 1', currentMatchId: 'm1' },
+          { id: 'b2', name: 'Board 2', currentMatchId: 'm2' },
+        ],
+      });
+      await updateDoc(doc(f, 'matches/m1'), { boardId: 'b1' });
+      await setDoc(doc(f, 'matches/m2'), match({ id: 'm2', boardId: 'b2' }));
+    });
+  }
+
+  const station = (over = {}) => ({
+    ...location, code, deviceUid: null, expiresAt: new Date(Date.now() + 600_000), ...over,
+  });
+  const tablet = (uid) => env.authenticatedContext(uid, {
+    firebase: { sign_in_provider: 'anonymous' },
+  }).firestore();
+  function claim(f, uid, proof, place = location) {
+    const batch = writeBatch(f);
+    batch.set(doc(f, 'board_devices', uid), place);
+    batch.update(doc(f, stationPath), { deviceUid: uid, proof });
+    return batch.commit();
+  }
+
+  it('Kopplung erfordert gültigen Einmalcode, Geräte-ID und Board', async () => {
+    await prepare();
+    const f = tablet('pad');
+    await assertFails(setDoc(doc(db('scorer'), stationPath), station()));
+    await assertFails(setDoc(doc(db('dir'), stationPath), station({ boardIndex: 1 })));
+    await assertSucceeds(setDoc(doc(db('dir'), stationPath), station()));
+    await assertSucceeds(getDocs(collection(db('dir'), 'tournaments/t1/tablets')));
+    await assertFails(getDoc(doc(f, stationPath)));
+    await assertFails(getDocs(collection(f, 'tournaments/t1/tablets')));
+    await assertFails(claim(f, 'pad', 'wrong'));
+    await assertFails(claim(f, 'pad', code, { ...location, boardIndex: 1 }));
+    await assertFails(claim(db('pl'), 'pl', code));
+    await assertFails(setDoc(doc(f, 'board_devices/pad'), location));
+    await assertSucceeds(claim(f, 'pad', code));
+    await assertSucceeds(getDoc(doc(f, stationPath)));
+    await assertSucceeds(getDoc(doc(f, 'tournaments/t1')));
+    await assertFails(claim(tablet('pad2'), 'pad2', code));
+    await assertFails(setDoc(doc(db('dir'), stationPath), station()));
+  });
+
+  it('Tablet schreibt nur aktuelle Begegnung und verliert Zugriff beim Trennen', async () => {
+    await prepare();
+    const f = tablet('pad');
+    await assertSucceeds(setDoc(doc(db('dir'), stationPath), station()));
+    await assertSucceeds(claim(f, 'pad', code));
+    const current = doc(f, 'matches/m1');
+    const other = doc(f, 'matches/m2');
+    await assertSucceeds(getDoc(current));
+    await assertFails(getDoc(other));
+    await assertSucceeds(updateDoc(current, { draft: [320], version: 2 }));
+    await assertFails(updateDoc(other, { draft: [320], version: 2 }));
+    await assertFails(updateDoc(current, { status: 'confirmed', version: 3 }));
+    await assertFails(updateDoc(current, { boardId: 'b2', version: 3 }));
+    await assertSucceeds(updateDoc(current, { status: 'awaitingConfirmation', winnerId: 'a', version: 3 }));
+    await assertSucceeds(updateDoc(doc(db('dir'), 'tournaments/t1'), {
+      boards: [
+        { id: 'b1', name: 'Board 1', currentMatchId: null },
+        { id: 'b2', name: 'Board 2', currentMatchId: 'm2' },
+      ],
+      version: 2,
+    }));
+    await assertFails(updateDoc(current, { draft: [], version: 4 }));
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'matches/m3'),
+      match({ id: 'm3', boardId: 'b1' })));
+    await assertSucceeds(updateDoc(doc(db('dir'), 'tournaments/t1'), {
+      boards: [
+        { id: 'b1', name: 'Board 1', currentMatchId: 'm3' },
+        { id: 'b2', name: 'Board 2', currentMatchId: 'm2' },
+      ],
+      version: 3,
+    }));
+    await assertSucceeds(updateDoc(doc(f, 'matches/m3'), { draft: [320], version: 2 }));
+    await assertFails(updateDoc(current, { draft: [], version: 4 }));
+    await assertSucceeds(deleteDoc(doc(db('dir'), stationPath)));
+    await assertFails(getDoc(doc(f, 'tournaments/t1')));
+    await assertSucceeds(setDoc(doc(db('dir'), stationPath), station({ code: 'bcdefghijklmnopqrstu' })));
+    await assertSucceeds(claim(tablet('pad2'), 'pad2', 'bcdefghijklmnopqrstu'));
+  });
+
+  it('abgelaufene Kopplung wird abgewiesen und Tablet kann sich selbst trennen', async () => {
+    await prepare();
+    const f = tablet('pad');
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), stationPath), station({ expiresAt: new Date(Date.now() - 1000) }));
+    });
+    await assertFails(claim(f, 'pad', code));
+    await assertSucceeds(setDoc(doc(db('dir'), stationPath), station()));
+    await assertSucceeds(claim(f, 'pad', code));
+    const batch = writeBatch(f);
+    batch.delete(doc(f, 'board_devices/pad'));
+    batch.delete(doc(f, stationPath));
+    await assertSucceeds(batch.commit());
+    await assertFails(getDoc(doc(f, 'matches/m1')));
+    await assertFails(claim(f, 'pad', code));
   });
 });

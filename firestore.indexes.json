@@ -1,11 +1,6 @@
 {
   "indexes": [
     {
-      "collectionGroup": "tournaments",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "createdAt", "order": "DESCENDING" }]
-    },
-    {
       "collectionGroup": "matches",
       "queryScope": "COLLECTION",
       "fields": [
@@ -14,5 +9,11 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "members",
+      "fieldPath": "uid",
+      "indexes": [{ "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }]
+    }
+  ]
 }

@@ -13,10 +13,27 @@ import '../core/games/cricket.dart';
 import 'models.dart';
 import 'repository.dart';
 
-String _inviteCode() {
+String _inviteCode({required bool isPublic}) {
   const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // ohne verwechselbare Zeichen
   final r = Random.secure();
-  return List.generate(6, (_) => alphabet[r.nextInt(alphabet.length)]).join();
+  return List.generate(isPublic ? 6 : 12, (_) => alphabet[r.nextInt(alphabet.length)]).join();
+}
+
+class ResultCorrection {
+  final TournamentRecord _tournament;
+  final MatchRecord _correctedMatch;
+  final MatchRecord _originalMatch;
+  final List<MatchRecord> invalidatedMatches;
+  final List<String> changedPairings;
+
+  ResultCorrection._(
+    this._tournament,
+    this._correctedMatch,
+    this._originalMatch,
+    Iterable<MatchRecord> invalidatedMatches,
+    Iterable<String> changedPairings,
+  ) : invalidatedMatches = List.unmodifiable(invalidatedMatches),
+      changedPairings = List.unmodifiable(changedPairings);
 }
 
 /// Anwendungslogik rund um Turniere und Begegnungen. Alle Methoden prüfen die
@@ -31,7 +48,10 @@ class TournamentService {
 
   Future<void> _log(AppUser by, String action,
       {String? tournamentId, String? matchId, String detail = ''}) =>
-      repo.audit(AuditEntry(
+      repo.audit(_auditEntry(by, action, tournamentId: tournamentId, matchId: matchId, detail: detail));
+
+  AuditEntry _auditEntry(AppUser by, String action,
+      {String? tournamentId, String? matchId, String detail = ''}) => AuditEntry(
         id: newId('a'),
         at: DateTime.now().toUtc(),
         uid: by.uid,
@@ -39,7 +59,7 @@ class TournamentService {
         tournamentId: tournamentId,
         matchId: matchId,
         detail: detail,
-      ));
+      );
 
   /// Neues Turnier; der Ersteller wird Turnierleiter.
   Future<TournamentRecord> create(
@@ -60,7 +80,7 @@ class TournamentService {
       rules: rules,
       isPublic: isPublic,
       status: TournamentStatus.registration,
-      inviteCode: _inviteCode(),
+      inviteCode: _inviteCode(isPublic: isPublic),
       createdBy: by.uid,
       createdAt: DateTime.now().toUtc(),
       boards: [for (var i = 1; i <= boardCount; i++) BoardInfo('b$i', 'Board $i')],
@@ -78,6 +98,9 @@ class TournamentService {
 
   /// Spieler tritt per Einladungscode bei (selbst) oder wird von der Leitung hinzugefügt.
   Future<TournamentRecord> join(AppUser by, TournamentRecord t, PlayerProfile player) async {
+    final role = await roleIn(by, t);
+    _require(role, Permission.joinTournament);
+    if (player.id != by.playerId || player.uid != by.uid) throw PermissionDenied();
     if (t.status != TournamentStatus.registration) {
       throw StateError('Die Anmeldung ist geschlossen (Auslosung erfolgt).');
     }
@@ -180,11 +203,22 @@ class TournamentService {
   }) async {
     final role = await roleIn(by, t);
     _require(role, Permission.startMatch);
-    if (!t.published || t.plan == null) throw StateError('Die Auslosung ist noch nicht veröffentlicht.');
+    final fresh = await repo.watchTournament(t.id).first;
+    if (fresh == null || !fresh.published || fresh.plan == null) {
+      throw StateError('Die Auslosung ist noch nicht veröffentlicht.');
+    }
+    t = fresh;
+    final planned = t.plan!.playable.where((m) => m.id == pm.id).firstOrNull;
+    if (planned == null || planned.aId != pm.aId || planned.bId != pm.bId) {
+      throw VersionConflict('Die Begegnung hat sich geändert.');
+    }
     final names = t.plan!.names;
     final existing = await repo.watchMatches(tournamentId: t.id).first;
     if (existing.any((m) => m.planMatchId == pm.id && m.status != MatchStatus.confirmed)) {
       throw StateError('Diese Begegnung läuft bereits.');
+    }
+    if (boardId != null && !t.boards.any((b) => b.id == boardId && b.currentMatchId == null)) {
+      throw StateError('Dieses Board ist belegt oder existiert nicht.');
     }
     final players = [for (final id in pm.playerIds) MatchPlayer(id, names[id] ?? id)];
     final now = DateTime.now().toUtc();
@@ -214,27 +248,15 @@ class TournamentService {
           ? AroundTheClockMatch(playerIds: players.map((p) => p.id).toList())
           : null,
     );
-    final created = await repo.createMatch(m);
-    if (boardId != null) await _setBoard(t.id, boardId, created.id);
-    await _log(by, 'match.start', tournamentId: t.id, matchId: created.id);
-    return created;
-  }
-
-  Future<void> _setBoard(String tournamentId, String boardId, String? matchId) async {
-    for (var attempt = 0; attempt < 3; attempt++) {
-      final fresh = await repo.watchTournament(tournamentId).first;
-      if (fresh == null) return;
-      final boards = [
-        for (final b in fresh.boards)
-          if (b.id == boardId) BoardInfo(b.id, b.name, currentMatchId: matchId) else b
-      ];
-      try {
-        await repo.saveTournament(fresh.copyWith(boards: boards));
-        return;
-      } on VersionConflict {
-        continue;
-      }
-    }
+    await repo.commitTournamentMatches(
+      t.copyWith(boards: [
+        for (final board in t.boards)
+          if (board.id == boardId) BoardInfo(board.id, board.name, currentMatchId: m.id) else board,
+      ]),
+      create: [m],
+      audit: _auditEntry(by, 'match.start', tournamentId: t.id, matchId: m.id),
+    );
+    return m;
   }
 
   /// Schlägt Begegnungen für freie Boards vor (Spielpausen werden beachtet).
@@ -274,6 +296,9 @@ class TournamentService {
     final tRole = m.tournamentId == null ? null : await repo.memberRole(m.tournamentId!, by.uid);
     _require(effectiveRole(by.role, tRole), Permission.submitResult);
     final saved = await repo.updateMatch(m.id, (cur) {
+      if (cur.status == MatchStatus.voided || cur.status == MatchStatus.confirmed) {
+        throw StateError('Diese Begegnung kann nicht eingereicht werden.');
+      }
       if (!cur.isFinished) throw StateError('Das Spiel ist noch nicht beendet.');
       return cur.copyWith(status: MatchStatus.awaitingConfirmation);
     }, expectedVersion: m.version);
@@ -288,41 +313,140 @@ class TournamentService {
     final tRole = tid == null ? null : await repo.memberRole(tid, by.uid);
     _require(effectiveRole(by.role, tRole), Permission.confirmResult);
     if (!m.isFinished) throw StateError('Das Spiel ist noch nicht beendet.');
-    if (m.status == MatchStatus.confirmed) throw StateError('Bereits bestätigt.');
+    if (m.status == MatchStatus.confirmed || m.status == MatchStatus.voided) {
+      throw StateError('Das Ergebnis kann nicht bestätigt werden.');
+    }
 
-    await repo.updateMatch(m.id, (cur) => cur.copyWith(status: MatchStatus.confirmed));
-    await _log(by, 'match.confirm', tournamentId: tid, matchId: m.id);
-    if (tid == null || m.planMatchId == null) return null;
+    final confirmed = m.copyWith(status: MatchStatus.confirmed);
+    if (tid == null || m.planMatchId == null) {
+      await repo.updateMatch(m.id, (_) => confirmed, expectedVersion: m.version);
+      await _log(by, 'match.confirm', tournamentId: tid, matchId: m.id);
+      return null;
+    }
 
-    for (var attempt = 0; attempt < 5; attempt++) {
-      final t = await repo.watchTournament(tid).first;
-      if (t?.plan == null) return t;
-      final plan = TournamentPlan.fromJson(t!.plan!.toJson());
-      final (legsA, legsB) = _legScore(m);
-      plan.reportResult(m.planMatchId!, m.winnerId!, legsA: legsA, legsB: legsB);
-      final boards = [
-        for (final b in t.boards)
-          if (b.currentMatchId == m.id) BoardInfo(b.id, b.name) else b
-      ];
-      try {
-        return await repo.saveTournament(t.copyWith(
-          plan: plan,
-          boards: boards,
-          status: plan.isComplete ? TournamentStatus.finished : t.status,
-        ));
-      } on VersionConflict {
-        continue;
+    final t = await repo.watchTournament(tid).first;
+    if (t?.plan == null) throw StateError('Der Spielplan wurde nicht gefunden.');
+    final plan = TournamentPlan.fromJson(t!.plan!.toJson());
+    if (!plan.playable.any((p) => p.id == m.planMatchId &&
+        p.aId == m.players[0].id && p.bId == m.players[1].id)) {
+      throw VersionConflict('Die Begegnung steht nicht mehr so im Spielplan.');
+    }
+    final (legsA, legsB) = m.legsScore;
+    plan.reportResult(m.planMatchId!, m.winnerId!, legsA: legsA, legsB: legsB);
+    return repo.commitTournamentMatches(
+      t.copyWith(
+        plan: plan,
+        boards: _releaseBoards(t, {m.id}),
+        status: plan.isComplete ? TournamentStatus.finished : TournamentStatus.running,
+      ),
+      update: [confirmed],
+      audit: _auditEntry(by, 'match.confirm', tournamentId: tid, matchId: m.id),
+    );
+  }
+
+  /// Computes the effects without changing the draw, matches or score logs.
+  Future<ResultCorrection> previewCorrection(
+    AppUser by, MatchRecord match, OfficialResult result,
+  ) async {
+    final tid = match.tournamentId;
+    if (tid == null || match.planMatchId == null) throw StateError('Kein Turnierspiel.');
+    final t = await repo.watchTournament(tid).first;
+    if (t?.plan == null || !t!.published) throw StateError('Kein veröffentlichter Spielplan.');
+    _require(await roleIn(by, t), Permission.correctResult);
+    final matches = await repo.watchMatches(tournamentId: tid).first;
+    final current = matches.where((m) => m.id == match.id).firstOrNull;
+    if (current?.version != match.version || current?.status != MatchStatus.confirmed) {
+      throw VersionConflict('Das bestätigte Ergebnis hat sich geändert.');
+    }
+    if (match.players.length != 2 || result.winnerIndex < 0 || result.winnerIndex > 1 ||
+        result.legsA < 0 || result.legsB < 0 ||
+        result.legsA + result.legsB < 1 ||
+        (match.x01?.rules.format.usesSets != true &&
+            (result.winnerIndex == 0 ? result.legsA <= result.legsB : result.legsB <= result.legsA))) {
+      throw ArgumentError('Bitte ein gültiges Ergebnis und den Sieger angeben.');
+    }
+    final corrected = current!.copyWith(correction: result);
+    final original = t.plan!;
+    final swissRound = original.format == TournamentFormat.swiss &&
+            corrected.winnerId != match.winnerId
+        ? original.fixtures.firstWhere((f) => f.id == match.planMatchId).round
+        : null;
+    final plan = original.resetResults(preserveSwissThrough: swissRound);
+    final results = {
+      for (final m in matches)
+        if (m.planMatchId != null && m.status == MatchStatus.confirmed)
+          m.planMatchId!: m.id == match.id ? corrected : m,
+    };
+    final applied = <String>{};
+    final rng = Random(19);
+    while (true) {
+      final playable = plan.playable.where((p) {
+        final m = results[p.id];
+        return m != null && m.players.length == 2 &&
+            m.players[0].id == p.aId && m.players[1].id == p.bId;
+      }).toList();
+      if (playable.isEmpty) break;
+      for (final p in playable) {
+        final m = results.remove(p.id)!;
+        final (legsA, legsB) = m.legsScore;
+        plan.reportResult(p.id, m.winnerId!, legsA: legsA, legsB: legsB, rng: rng);
+        applied.add(m.id);
       }
     }
-    throw VersionConflict('Turnier konnte nicht aktualisiert werden (zu viele gleichzeitige Änderungen).');
+    if (!applied.contains(match.id)) throw StateError('Das Ergebnis passt nicht zum Spielplan.');
+
+    final before = original.pairings;
+    final after = plan.pairings;
+    final invalidated = <MatchRecord>[
+      for (final m in matches)
+        if (m.planMatchId != null && !applied.contains(m.id) &&
+            (m.status == MatchStatus.confirmed || m.players.length != 2 ||
+                after[m.planMatchId] != (m.players[0].id, m.players[1].id))) m,
+    ];
+    String pairingName((String?, String?) pair) =>
+        [pair.$1, pair.$2].map((id) => original.names[id] ?? 'offen').join(' – ');
+    final changed = [
+      for (final entry in before.entries)
+        if (entry.key != match.planMatchId && entry.value != after[entry.key])
+          '${pairingName(entry.value)} → ${after.containsKey(entry.key) ? pairingName(after[entry.key]!) : 'neu anzusetzen'}',
+      for (final entry in after.entries)
+        if (!before.containsKey(entry.key)) 'Neu: ${pairingName(entry.value)}',
+    ];
+    return ResultCorrection._(
+      t.copyWith(
+        plan: plan,
+        boards: _releaseBoards(t, invalidated.map((m) => m.id).toSet()),
+        status: plan.isComplete ? TournamentStatus.finished : TournamentStatus.running,
+      ),
+      corrected,
+      current,
+      invalidated,
+      changed,
+    );
   }
 
-  (int, int) _legScore(MatchRecord m) {
-    final x = m.x01;
-    if (x == null || m.players.length < 2) return (m.winnerIndex == 0 ? 1 : 0, m.winnerIndex == 1 ? 1 : 0);
-    final s = x.state.totalLegsWon;
-    return (s[0], s[1]);
+  Future<void> applyCorrection(AppUser by, ResultCorrection preview, {bool annulMatches = false}) async {
+    final t = preview._tournament;
+    final corrected = preview._correctedMatch;
+    _require(await roleIn(by, t), Permission.correctResult);
+    if (preview.invalidatedMatches.isNotEmpty && !annulMatches) {
+      throw StateError('Betroffene Begegnungen müssen ausdrücklich annulliert werden.');
+    }
+    await repo.commitTournamentMatches(
+      t,
+      update: [
+        corrected,
+        for (final m in preview.invalidatedMatches) m.copyWith(status: MatchStatus.voided),
+      ],
+      audit: _auditEntry(by, 'match.correct', tournamentId: t.id, matchId: corrected.id,
+        detail: '${preview._originalMatch.legsScore} → ${corrected.legsScore} · Sieger: ${preview._originalMatch.winnerId} → ${corrected.winnerId} · Annulliert: ${preview.invalidatedMatches.map((m) => m.id).join(', ')}'),
+    );
   }
+
+  List<BoardInfo> _releaseBoards(TournamentRecord t, Set<String> ids) => [
+    for (final b in t.boards)
+      if (ids.contains(b.currentMatchId)) BoardInfo(b.id, b.name) else b,
+  ];
 }
 
 /// Erzeugt Begegnungen außerhalb von Turnieren (Freundschaftsspiel, Training).
@@ -366,7 +490,7 @@ class StatsService {
   /// Leg-Aufzeichnungen eines X01-Matches.
   static List<LegRecord> legsOf(MatchRecord m) {
     final x = m.x01;
-    if (x == null) return const [];
+    if (x == null || m.correction != null) return const [];
     final byLeg = <int, List<dynamic>>{};
     for (final v in x.visits) {
       byLeg.putIfAbsent(v.legNo, () => []).add(v);
@@ -393,9 +517,12 @@ class StatsService {
       matchId: m.id,
       playerIds: m.players.map((p) => p.id).toList(),
       winnerId: m.winnerId,
-      setsWon: x == null
+      setsWon: x == null || m.correction != null
           ? const {}
           : {for (var i = 0; i < m.players.length; i++) m.players[i].id: x.state.setsWon[i]},
+      officialLegsWon: m.correction == null
+          ? const {}
+          : {m.players[0].id: m.correction!.legsA, m.players[1].id: m.correction!.legsB},
       playedAt: m.updatedAt,
     );
   }
@@ -406,6 +533,7 @@ class StatsService {
   static PlayerStats forPlayer(String playerId, Iterable<MatchRecord> matches,
       {bool includeLive = false}) {
     final used = matches.where((m) =>
+        m.status != MatchStatus.voided &&
         m.players.any((p) => p.id == playerId) &&
         (includeLive || m.isFinished) &&
         m.gameType.isX01);

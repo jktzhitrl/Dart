@@ -45,6 +45,7 @@ export const submitVisit = onCall(async (request) => {
       : m.scorerUid === uid || role === 'admin';
     if (!allowed) throw new HttpsError('permission-denied', 'Keine Berechtigung zur Eingabe');
     if (m.status === 'paused') throw new HttpsError('failed-precondition', 'Das Spiel ist pausiert');
+    if (m.status === 'voided') throw new HttpsError('failed-precondition', 'Die Begegnung wurde annulliert');
     if (m.status === 'confirmed') throw new HttpsError('failed-precondition', 'Ergebnis bereits bestätigt');
     if (m.version !== expectedVersion) {
       throw new HttpsError('aborted', `Versionskonflikt: erwartet ${expectedVersion}, aktuell ${m.version}`);

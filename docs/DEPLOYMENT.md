@@ -11,7 +11,7 @@ firebase deploy --only hosting
 
 Automatisch per GitHub Actions (`.github/workflows/darts-deploy-web.yml`):
 
-1. Dienstkonto anlegen: Google Cloud Console → IAM → Dienstkonten → Rolle *Firebase Hosting Admin*
+1. Dienstkonto anlegen: Google Cloud Console → IAM → Dienstkonten → Rollen *Firebase Hosting Admin*, *Cloud Datastore Index Admin*, *Firebase Rules Admin* und Rechte zum Lesen sowie bei Bedarf Ändern der Firebase-Authentication-Konfiguration
    (für Rules/Functions zusätzlich *Cloud Datastore Owner* bzw. *Firebase Admin* und *Cloud Functions Admin*),
    JSON-Schlüssel erzeugen. Alternativ `firebase init hosting:github` ausführen, das legt das Secret an.
 2. Repository-Secrets setzen: `FIREBASE_SERVICE_ACCOUNT` (kompletter JSON-Inhalt), `FIREBASE_PROJECT_ID`,
@@ -57,3 +57,9 @@ Firebase unter *Authentication → Autorisierte Domains* die Pages-Domain eintra
   Pro Aufnahme entstehen 1 Schreibvorgang und je Zuschauer-Gerät 1 Lesevorgang – für Turniere unkritisch.
 * **Zuschauer ohne Konto:** *Anonyme Anmeldung* aktivieren und Spielern den Link zur Web-App geben; öffentliche
   Turniere/Spiele (`isPublic`) sind lesbar.
+
+Beim Push auf `main` aktiviert der Deploy bei Bedarf die anonyme Firebase-Anmeldung,
+veröffentlicht Firestore-Regeln und Indizes und wartet auf den Mitgliedschaftsindex.
+Danach veröffentlicht er die Web-App auf dem Live-Kanal. Pull Requests deployen ihre
+Web-App auf einen Vorschau-Kanal. Cloud Functions können zusätzlich per manuellem
+Workflow auf `main` bereitgestellt werden.

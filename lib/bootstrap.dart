@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/auth_service.dart';
+import 'data/board_tablets.dart';
 import 'data/firestore_repository.dart';
 import 'data/local_repository.dart';
 import 'data/repository.dart';
@@ -14,11 +15,12 @@ class AppServices {
   final AppRepository repo;
   final AuthService auth;
   final TournamentService tournaments;
+  final BoardTablets? tablets;
 
   /// Fehlermeldung, falls Firebase konfiguriert war, aber nicht startete.
   final String? firebaseError;
 
-  AppServices({required this.repo, required this.auth, this.firebaseError})
+  AppServices({required this.repo, required this.auth, this.firebaseError, this.tablets})
       : tournaments = TournamentService(repo);
 
   bool get isRemote => repo.isRemote;
@@ -39,7 +41,7 @@ Future<AppServices> bootstrap() async {
         FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
       } catch (_) {}
       final repo = FirestoreRepository();
-      return AppServices(repo: repo, auth: FirebaseAuthService(repo));
+      return AppServices(repo: repo, auth: FirebaseAuthService(repo), tablets: BoardTablets(repo.db));
     } catch (e) {
       error = 'Firebase konnte nicht gestartet werden: $e';
     }

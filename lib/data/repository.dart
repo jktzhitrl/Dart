@@ -28,6 +28,18 @@ abstract class AppRepository {
   Stream<TournamentRecord?> watchTournament(String id);
   Future<TournamentRecord?> findTournamentByInvite(String code);
 
+  Future<String?> resolveInvite(AppUser user, String code, {String? tournamentId});
+  Future<void> indexInvite(TournamentRecord t);
+
+  /// Atomically writes the tournament, new/modified matches and its audit entry.
+  /// Each update carries the version observed by the caller.
+  Future<TournamentRecord> commitTournamentMatches(
+    TournamentRecord t, {
+    List<MatchRecord> create = const [],
+    List<MatchRecord> update = const [],
+    required AuditEntry audit,
+  });
+
   /// Speichert ein Turnier mit optimistischer Versionsprüfung
   /// (`t.version` muss dem gespeicherten Stand entsprechen, sonst [VersionConflict]).
   Future<TournamentRecord> saveTournament(TournamentRecord t);

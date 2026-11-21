@@ -19,7 +19,8 @@ enum _InputKind { board, buttons, total }
 ///  * Modus B: nur Gesamtpunkte je Aufnahme
 class ScoringScreen extends StatefulWidget {
   final String matchId;
-  const ScoringScreen({super.key, required this.matchId});
+  final String? boardTablet;
+  const ScoringScreen({super.key, required this.matchId, this.boardTablet});
 
   @override
   State<ScoringScreen> createState() => _ScoringScreenState();
@@ -37,13 +38,17 @@ class _ScoringScreenState extends State<ScoringScreen> {
   void initState() {
     super.initState();
     _stream = context.read<AppRepository>().watchMatch(widget.matchId);
-    _loadMeta();
+    if (widget.boardTablet == null) {
+      _loadMeta();
+    } else {
+      _roleLoaded = true;
+    }
   }
 
   Future<void> _loadMeta() async {
     final repo = context.read<AppRepository>();
     final user = context.read<AppUser>();
-    final m = await repo.watchMatch(widget.matchId).first;
+    final m = await repo.watchMatch(widget.matchId).first.onError((_, __) => null);
     if (m?.tournamentId != null) {
       _tournamentRole = await repo.memberRole(m!.tournamentId!, user.uid);
     }
@@ -53,6 +58,7 @@ class _ScoringScreenState extends State<ScoringScreen> {
   }
 
   bool _canScore(MatchRecord m, AppUser user) {
+    if (widget.boardTablet != null) return true;
     final role = effectiveRole(user.role, _tournamentRole);
     if (m.tournamentId == null) return role != Role.spectator; // Freundschaftsspiel
     return can(role, Permission.enterScores);
@@ -187,7 +193,16 @@ class _ScoringScreenState extends State<ScoringScreen> {
 
   Future<void> _submitResult(MatchRecord m) async {
     try {
-      await context.read<TournamentService>().submitResult(context.read<AppUser>(), m);
+      if (widget.boardTablet == null) {
+        await context.read<TournamentService>().submitResult(context.read<AppUser>(), m);
+      } else {
+        await context.read<AppRepository>().updateMatch(m.id, (current) {
+          if (!current.isFinished || current.status != MatchStatus.live) {
+            throw StateError('Das Ergebnis kann nicht eingereicht werden.');
+          }
+          return current.copyWith(status: MatchStatus.awaitingConfirmation);
+        }, expectedVersion: m.version);
+      }
       _toast('Ergebnis zur Bestätigung übermittelt.');
     } on VersionConflict {
       _toast('Spielstand wurde zwischenzeitlich geändert.', error: true);
@@ -212,11 +227,18 @@ class _ScoringScreenState extends State<ScoringScreen> {
       stream: _stream,
       builder: (context, snap) {
         final m = snap.data;
-        if (!snap.hasData || !_roleLoaded) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        if (snap.hasError || (m == null && snap.connectionState != ConnectionState.waiting) ||
+            m?.status == MatchStatus.voided || m?.correction != null) {
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(child: Text(
+              m?.status == MatchStatus.voided ? 'Diese Begegnung wurde annulliert.'
+                  : m?.correction != null ? matchSummaryLine(m!) : 'Begegnung nicht verfügbar',
+            )),
+          );
         }
-        if (m == null) {
-          return Scaffold(appBar: AppBar(), body: const Center(child: Text('Begegnung nicht gefunden')));
+        if (m == null || !_roleLoaded) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         final canScore = _canScore(m, user);
         final canConfirm = can(effectiveRole(user.role, _tournamentRole), Permission.confirmResult);
@@ -233,9 +255,10 @@ class _ScoringScreenState extends State<ScoringScreen> {
 
         return Scaffold(
           appBar: AppBar(
-            title: Text(m.players.map((p) => p.name).join(' – ')),
+            title: Text([if (widget.boardTablet != null) widget.boardTablet!,
+              m.players.map((p) => p.name).join(' – ')].join(' · ')),
             actions: [
-              IconButton(
+              if (widget.boardTablet == null) IconButton(
                 tooltip: 'TV-Modus',
                 icon: const Icon(Icons.tv),
                 onPressed: () => Navigator.push(context,

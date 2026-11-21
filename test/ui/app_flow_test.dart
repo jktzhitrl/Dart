@@ -2,11 +2,13 @@ import 'package:darts_tournament_manager/app.dart';
 import 'package:darts_tournament_manager/bootstrap.dart';
 import 'package:darts_tournament_manager/core/auth/permissions.dart';
 import 'package:darts_tournament_manager/core/models/rules.dart';
+import 'package:darts_tournament_manager/core/tournament/participant.dart';
 import 'package:darts_tournament_manager/data/auth_service.dart';
 import 'package:darts_tournament_manager/data/local_repository.dart';
 import 'package:darts_tournament_manager/core/tournament/tournament_plan.dart';
 import 'package:darts_tournament_manager/data/models.dart';
 import 'package:darts_tournament_manager/data/services.dart';
+import 'package:darts_tournament_manager/ui/screens/scoring_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -194,7 +196,64 @@ void main() {
     expect(find.text('Code: ${t.inviteCode}'), findsOneWidget);
   });
 
-  testWidgets('Beitritt per Einladungscode', (tester) async {
+  testWidgets('Spielaufruf erscheint bei Boardbelegung und lässt sich schließen', (tester) async {
+    final (services, repo) = await startApp(tester, size: const Size(400, 800));
+    await login(tester, 'Alice');
+    await tester.runAsync(() async {
+      final svc = services.tournaments;
+      final alice = (await repo.getUser('demo-alice'))!;
+      var t = await svc.create(alice, name: 'Abend', format: TournamentFormat.singleElimination,
+          gameType: GameType.x501, rules: const X01Rules());
+      t = await svc.addParticipant(alice, t, Participant(id: alice.playerId!, name: 'Alice'));
+      t = await svc.addParticipant(alice, t, const Participant(id: 'bob', name: 'Bob'));
+      t = await svc.publish(alice, await svc.draw(alice, t));
+      await svc.startMatch(alice, t, t.plan!.playable.single, boardId: 'b1');
+    });
+    await settle(tester);
+    expect(find.text('Jetzt an Board 1'), findsOneWidget);
+    expect(find.text('Gegen Bob'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('dismissBoardCall')));
+    await settle(tester);
+    expect(find.text('Jetzt an Board 1'), findsNothing);
+  });
+
+  testWidgets('Board-Modus zählt ohne Spielerkonto und sendet das Ergebnis', (tester) async {
+    final (services, repo) = await startApp(tester);
+    await tester.runAsync(() => services.auth.signInAsSpectator());
+    await settle(tester);
+    final match = (await tester.runAsync(() async {
+      const admin = AppUser(uid: 'a', displayName: 'Leitung', role: Role.admin);
+      final svc = services.tournaments;
+      var t = await svc.create(admin, name: 'Cup', format: TournamentFormat.singleElimination,
+          gameType: GameType.x301, rules: const X01Rules(format: MatchFormat(legsToWinSet: 1)));
+      t = await svc.addParticipant(admin, t, const Participant(id: 'a', name: 'Ann'));
+      t = await svc.addParticipant(admin, t, const Participant(id: 'b', name: 'Ben'));
+      t = await svc.publish(admin, await svc.draw(admin, t));
+      return svc.startMatch(admin, t, t.plan!.playable.single, boardId: 'b1');
+    }))!;
+    Navigator.of(tester.element(find.text('Hallo Zuschauer'))).push(
+      MaterialPageRoute<void>(builder: (_) => ScoringScreen(matchId: match.id, boardTablet: 'Board 1')),
+    );
+    await settle(tester);
+    expect(find.textContaining('Board 1 ·'), findsOneWidget);
+    await tester.tap(find.text('Summe'));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('quick-180')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('key-ok')));
+    await settle(tester);
+    expect(find.text('121'), findsOneWidget);
+    await tester.runAsync(() => repo.updateMatch(match.id, (m) => m.copyWith(
+      x01: m.x01!.submitTotal(0).submitTotal(121),
+    )));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('submitResult')));
+    await settle(tester);
+    expect(find.text('Wartet auf Bestätigung durch die Turnierleitung.'), findsOneWidget);
+    expect(find.byKey(const Key('confirmResult')), findsNothing);
+  });
+
+  testWidgets('Einladungscode öffnet das Turnier; Teilnahme erfolgt separat', (tester) async {
     final (services, repo) = await startApp(tester);
     await login(tester, 'Alice');
     final admin = (await tester.runAsync(() => repo.getUser('demo-alice')))!;
@@ -206,6 +265,10 @@ void main() {
     await settle(tester);
     await tester.enterText(find.byKey(const Key('inviteCode')), t.inviteCode.toLowerCase());
     await tester.tap(find.byKey(const Key('joinConfirm')));
+    await settle(tester);
+    final opened = (await tester.runAsync(() => repo.watchTournament(t.id).first))!;
+    expect(opened.registrations, isEmpty);
+    await tester.tap(find.byKey(const Key('registerSelf')));
     await settle(tester);
     final updated = (await tester.runAsync(() => repo.watchTournament(t.id).first))!;
     expect(updated.registrations.map((p) => p.name), ['Alice']);

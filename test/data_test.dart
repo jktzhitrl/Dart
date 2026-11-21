@@ -51,11 +51,11 @@ void main() {
     final found = await repo.findTournamentByInvite(t.inviteCode.toLowerCase());
     expect(found?.id, t.id);
     final pl = await repo.savePlayer(const PlayerProfile(id: 'pl1', name: 'Anna', uid: 'pl'));
-    t = await svc.join(player, found!, pl);
+    t = await svc.join(player.copyWith(playerId: pl.id), found!, pl);
     expect(t.registrations.single.name, 'Anna');
     expect(await repo.memberRole(t.id, 'pl'), Role.player);
     // doppelter Beitritt ändert nichts
-    final again = await svc.join(player, t, pl);
+    final again = await svc.join(player.copyWith(playerId: pl.id), t, pl);
     expect(again.registrations.length, 1);
     expect(await repo.findTournamentByInvite('XXXXXX'), isNull);
   });
@@ -104,6 +104,45 @@ void main() {
     expect(t.plan!.isComplete, isTrue);
     expect(t.status, TournamentStatus.finished);
     expect(t.plan!.championId, isNotNull);
+  });
+
+  test('Korrektur zeigt ein laufendes Finale und annulliert es erst nach Freigabe', () async {
+    var t = await tournament();
+    t = await svc.publish(admin, await svc.draw(admin, t, rng: Random(2)));
+
+    Future<MatchRecord> finish(PlanMatch pair) async {
+      final match = await svc.startMatch(admin, t, pair, boardId: 'b1');
+      final decided = await repo.updateMatch(match.id, (m) => m.copyWith(x01: m.x01!
+          .submitTotal(180)
+          .submitTotal(0)
+          .submitDarts([DartThrow.parse('T20'), DartThrow.parse('T11'), DartThrow.parse('D14')])));
+      t = (await svc.confirmResult(admin, decided))!;
+      return (await repo.watchMatch(match.id).first)!;
+    }
+
+    final semiA = await finish(t.plan!.playable.first);
+    final semiB = await finish(t.plan!.playable.first);
+    final finale = await svc.startMatch(admin, t, t.plan!.playable.single, boardId: 'b1');
+
+    final result = OfficialResult(0, 1, 1);
+    await expectLater(svc.previewCorrection(scorer, semiA, result), throwsA(isA<PermissionDenied>()));
+    var preview = await svc.previewCorrection(admin, semiA, result);
+    expect(preview.changedPairings, isNotEmpty);
+    expect(preview.invalidatedMatches.map((m) => m.id), [finale.id]);
+    await expectLater(svc.applyCorrection(admin, preview), throwsStateError);
+    await repo.updateMatch(finale.id, (m) => m.copyWith(x01: m.x01!.submitTotal(60)));
+    await expectLater(svc.applyCorrection(admin, preview, annulMatches: true), throwsA(isA<VersionConflict>()));
+    expect((await repo.watchMatch(semiA.id).first)!.correction, isNull);
+
+    preview = await svc.previewCorrection(admin, semiA, result);
+    await svc.applyCorrection(admin, preview, annulMatches: true);
+    final revised = (await repo.watchTournament(t.id).first)!;
+    expect(revised.boards.first.currentMatchId, isNull);
+    expect(revised.plan!.playable.single.playerIds, containsAll([semiA.players[1].id, semiB.winnerId]));
+    expect((await repo.watchMatch(semiA.id).first)!.winnerId, semiA.players[1].id);
+    expect((await repo.watchMatch(finale.id).first)!.status, MatchStatus.voided);
+    expect((await repo.watchMatch(finale.id).first)!.x01!.visits, hasLength(1));
+    expect((await repo.watchMatches(tournamentId: t.id).first).map((m) => m.id), isNot(contains(finale.id)));
   });
 
   test('gleichzeitige Ergebniseingaben: zweiter Schreiber mit altem Stand wird abgelehnt', () async {

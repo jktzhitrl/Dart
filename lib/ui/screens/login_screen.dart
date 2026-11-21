@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -143,7 +144,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ],
                 const SizedBox(height: 8),
-                OutlinedButton.icon(
+                if (!kIsWeb || !Uri.base.queryParameters.containsKey('invite')) OutlinedButton.icon(
                   key: const Key('spectatorStart'),
                   onPressed: _busy ? null : () => _run(() async {
                         await auth.signInAsSpectator();

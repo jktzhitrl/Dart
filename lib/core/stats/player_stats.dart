@@ -29,12 +29,14 @@ class MatchSummary {
   final List<String> playerIds;
   final String? winnerId;
   final Map<String, int> setsWon;
+  final Map<String, int> officialLegsWon;
   final DateTime? playedAt;
   const MatchSummary({
     required this.matchId,
     required this.playerIds,
     required this.winnerId,
     this.setsWon = const {},
+    this.officialLegsWon = const {},
     this.playedAt,
   });
 }
@@ -225,6 +227,13 @@ PlayerStats computePlayerStats(
   for (final m in matches) {
     if (!m.playerIds.contains(playerId)) continue;
     setsWon += m.setsWon[playerId] ?? 0;
+    if (m.officialLegsWon.isNotEmpty) {
+      final won = m.officialLegsWon[playerId] ?? 0;
+      final played = m.officialLegsWon.values.fold(0, (total, legs) => total + legs);
+      legsPlayed += played;
+      legsWon += won;
+      legsLost += played - won;
+    }
     if (m.winnerId == playerId) {
       matchesWon++;
     } else if (m.winnerId != null) {

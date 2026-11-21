@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -14,18 +15,32 @@ import '../../data/services.dart';
 import '../theme.dart';
 import '../widgets/bracket_view.dart';
 import '../widgets/standings_table.dart';
+import '../widgets/tournament_export_button.dart';
+import '../widgets/board_tablet_controls.dart';
+import '../../bootstrap.dart';
 import 'live_screen.dart';
+import 'result_correction.dart';
 import 'new_match_screen.dart';
 import 'scoring_screen.dart';
 
 const String _baseUrl = String.fromEnvironment('APP_BASE_URL');
 
-/// Einladungslink (Deep Link `?join=CODE`) für QR-Code und Teilen.
-String inviteLink(String code) {
+/// Öffentliche Links öffnen die Ansicht; private Links geben eingeladenen
+/// Konten Lesezugriff, unabhängig von der Anmeldung als Turnierteilnehmer.
+Uri _appUri() {
   var base = _baseUrl;
   if (base.isEmpty && kIsWeb) base = Uri.base.origin + Uri.base.path;
   if (base.isEmpty) base = 'https://example.web.app/';
-  return '$base${base.contains('?') ? '&' : '?'}join=$code';
+  return Uri.parse(base);
+}
+
+String inviteLink(TournamentRecord t) {
+  final uri = _appUri();
+  return uri.replace(queryParameters: {
+    ...uri.queryParameters,
+    'tournament': t.id,
+    if (!t.isPublic) 'invite': t.inviteCode,
+  }).toString();
 }
 
 String statusLabel(TournamentStatus s) => switch (s) {
@@ -56,9 +71,10 @@ class TournamentListScreen extends StatelessWidget {
       body: StreamBuilder<List<TournamentRecord>>(
         stream: repo.watchTournaments(),
         builder: (context, snap) {
+          if (snap.hasError) return const _Hint('Die Turnierliste konnte nicht geladen werden.');
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           final list = snap.data!
-              .where((t) => t.isPublic || t.createdBy == user.uid || can(user.role, Permission.manageRoles))
+              .where((t) => repo.isRemote || t.isPublic || t.createdBy == user.uid || user.role != Role.spectator)
               .toList();
           return ListView(padding: const EdgeInsets.all(16), children: [
             Row(children: [
@@ -67,7 +83,7 @@ class TournamentListScreen extends StatelessWidget {
                 key: const Key('joinByCode'),
                 onPressed: () => showJoinDialog(context),
                 icon: const Icon(Icons.qr_code),
-                label: const Text('Beitreten'),
+                label: const Text('Einladungscode'),
               ),
             ]),
             const SizedBox(height: 12),
@@ -99,52 +115,70 @@ class TournamentListScreen extends StatelessWidget {
   }
 }
 
-/// Dialog: Einladungscode eingeben (oder per Link/QR vorbelegt) und beitreten.
-Future<void> showJoinDialog(BuildContext context, {String? code}) async {
+Future<void> openTournamentLink(BuildContext context, {String? id, String? code}) async {
   final repo = context.read<AppRepository>();
-  final svc = context.read<TournamentService>();
   final user = context.read<AppUser>();
-  final ctrl = TextEditingController(text: code ?? '');
-  final nav = Navigator.of(context);
   final messenger = ScaffoldMessenger.of(context);
-  await showDialog<void>(
+  final nav = Navigator.of(context);
+  try {
+    if (code != null) id = await repo.resolveInvite(user, code, tournamentId: id);
+    if (!context.mounted) return;
+    if (id == null || id.isEmpty || id.contains('/')) {
+      throw StateError('Kein Turnier zu dieser Einladung gefunden.');
+    }
+    nav.push(MaterialPageRoute(builder: (_) => TournamentDetailScreen(id: id!)));
+  } catch (e) {
+    if (context.mounted) messenger.showSnackBar(SnackBar(content: Text('$e')));
+  }
+}
+
+Future<void> showJoinDialog(BuildContext context, {String? code}) async {
+  final entered = await showDialog<String>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Turnier beitreten'),
-      content: TextField(
-        key: const Key('inviteCode'),
-        controller: ctrl,
-        textCapitalization: TextCapitalization.characters,
-        decoration: const InputDecoration(labelText: 'Einladungscode'),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Abbrechen')),
-        FilledButton(
-          key: const Key('joinConfirm'),
-          onPressed: () async {
-            Navigator.pop(ctx);
-            try {
-              final t = await repo.findTournamentByInvite(ctrl.text);
-              if (t == null) {
-                messenger.showSnackBar(const SnackBar(content: Text('Kein Turnier mit diesem Code gefunden.')));
-                return;
-              }
-              final players = await repo.watchPlayers().first;
-              final me = players.where((p) => p.id == user.playerId).firstOrNull ??
-                  await repo.savePlayer(PlayerProfile(id: newId('pl'), name: user.displayName, uid: user.uid));
-              if (user.role != Role.spectator) await svc.join(user, t, me);
-              nav.push(MaterialPageRoute(builder: (_) => TournamentDetailScreen(id: t.id)));
-            } catch (e) {
-              messenger.showSnackBar(SnackBar(content: Text('$e')));
-            }
-          },
-          child: const Text('Beitreten'),
-        ),
-      ],
-    ),
+    builder: (_) => _InviteCodeDialog(code: code),
   );
-  // Der Controller wird nicht manuell freigegeben: der Dialog baut sich während
-  // der Schließen-Animation noch einmal auf und darf ihn dann noch lesen.
+  if (context.mounted && entered != null) {
+    await openTournamentLink(context, code: entered);
+  }
+}
+
+class _InviteCodeDialog extends StatefulWidget {
+  final String? code;
+  const _InviteCodeDialog({this.code});
+
+  @override
+  State<_InviteCodeDialog> createState() => _InviteCodeDialogState();
+}
+
+class _InviteCodeDialogState extends State<_InviteCodeDialog> {
+  late final _controller = TextEditingController(text: widget.code);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Turnier per Einladung öffnen'),
+    content: TextField(
+      key: const Key('inviteCode'),
+      controller: _controller,
+      autofocus: true,
+      textCapitalization: TextCapitalization.characters,
+      decoration: const InputDecoration(labelText: 'Einladungscode'),
+      onSubmitted: (code) => Navigator.pop(context, code),
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+      FilledButton(
+        key: const Key('joinConfirm'),
+        onPressed: () => Navigator.pop(context, _controller.text),
+        child: const Text('Öffnen'),
+      ),
+    ],
+  );
 }
 
 class TournamentCreateScreen extends StatefulWidget {
@@ -242,7 +276,8 @@ class _TournamentCreateScreenState extends State<TournamentCreateScreen> {
 /// Detailansicht eines Turniers.
 class TournamentDetailScreen extends StatefulWidget {
   final String id;
-  const TournamentDetailScreen({super.key, required this.id});
+  final VoidCallback? onSignIn;
+  const TournamentDetailScreen({super.key, required this.id, this.onSignIn});
   @override
   State<TournamentDetailScreen> createState() => _TournamentDetailScreenState();
 }
@@ -261,8 +296,13 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
   Future<void> _loadRole() async {
     final repo = context.read<AppRepository>();
     final user = context.read<AppUser>();
-    final inT = await repo.memberRole(widget.id, user.uid);
-    if (mounted) setState(() => _role = effectiveRole(user.role, inT));
+    if (user.uid.isEmpty) return;
+    try {
+      final inT = await repo.memberRole(widget.id, user.uid);
+      if (mounted) setState(() => _role = effectiveRole(user.role, inT));
+    } catch (_) {
+      if (mounted) setState(() => _role = user.role);
+    }
   }
 
   @override
@@ -271,8 +311,18 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
       stream: _stream,
       builder: (context, snap) {
         final t = snap.data;
-        if (!snap.hasData) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        if (t == null) return Scaffold(appBar: AppBar(), body: const Center(child: Text('Turnier nicht gefunden')));
+        if (snap.hasError || (snap.connectionState != ConnectionState.waiting && t == null)) {
+          return Scaffold(
+            appBar: AppBar(
+              actions: [
+                if (widget.onSignIn != null)
+                  TextButton(onPressed: widget.onSignIn, child: const Text('Anmelden')),
+              ],
+            ),
+            body: const Center(child: Text('Turnier nicht verfügbar. Prüfe den Einladungslink und deine Anmeldung.')),
+          );
+        }
+        if (t == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
         final showDraw = t.plan != null && (t.published || can(_role, Permission.runDraw));
         return DefaultTabController(
           length: 4,
@@ -280,7 +330,11 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
             appBar: AppBar(
               title: Text(t.name),
               actions: [
-                IconButton(
+                if (widget.onSignIn != null)
+                  TextButton(onPressed: widget.onSignIn, child: const Text('Anmelden')),
+                if (t.status == TournamentStatus.finished && t.plan?.isComplete == true)
+                  TournamentExportButton(tournament: t),
+                if (t.isPublic || can(_role, Permission.runDraw)) IconButton(
                   key: const Key('inviteButton'),
                   tooltip: 'Einladung / QR-Code',
                   icon: const Icon(Icons.qr_code_2),
@@ -295,7 +349,7 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
               ]),
             ),
             body: TabBarView(children: [
-              _Overview(t: t, role: _role, onChanged: _loadRole),
+              _Overview(t: t, role: _role, onChanged: _loadRole, onSignIn: widget.onSignIn),
               showDraw ? _Schedule(t: t, role: _role) : const _Hint('Die Auslosung wurde noch nicht veröffentlicht.'),
               showDraw ? _Tables(t: t) : const _Hint('Noch keine Tabelle.'),
               _MatchesTab(t: t, role: _role),
@@ -307,12 +361,24 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
   }
 }
 
-void showInvite(BuildContext context, TournamentRecord t) {
-  final link = inviteLink(t.inviteCode);
-  showDialog<void>(
+Future<void> showInvite(BuildContext context, TournamentRecord t) async {
+  if (!t.isPublic) {
+    try {
+      await context.read<AppRepository>().indexInvite(t);
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Der Einladungscode konnte nicht bereitgestellt werden.')),
+      );
+      return;
+    }
+  }
+  if (!context.mounted) return;
+  final link = inviteLink(t);
+  await showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text('Spieler einladen'),
+      title: const Text('Turnierlink teilen'),
       content: Column(mainAxisSize: MainAxisSize.min, children: [
         // Feste Größe: QrImageView nutzt einen LayoutBuilder, der in AlertDialogs
         // keine intrinsischen Maße liefern kann.
@@ -329,7 +395,19 @@ void showInvite(BuildContext context, TournamentRecord t) {
         const SizedBox(height: 4),
         SelectableText(link, style: const TextStyle(color: AppColors.textDim, fontSize: 12)),
       ]),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Schließen'))],
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Schließen')),
+        FilledButton.icon(
+          icon: const Icon(Icons.copy),
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: link));
+            if (!ctx.mounted) return;
+            Navigator.pop(ctx);
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turnierlink kopiert.')));
+          },
+          label: const Text('Link kopieren'),
+        ),
+      ],
     ),
   );
 }
@@ -348,7 +426,8 @@ class _Overview extends StatelessWidget {
   final TournamentRecord t;
   final Role role;
   final VoidCallback onChanged;
-  const _Overview({required this.t, required this.role, required this.onChanged});
+  final VoidCallback? onSignIn;
+  const _Overview({required this.t, required this.role, required this.onChanged, this.onSignIn});
 
   Future<void> _run(BuildContext context, Future<void> Function() f) async {
     try {
@@ -391,11 +470,17 @@ class _Overview extends StatelessWidget {
         ),
       ),
       const SizedBox(height: 12),
+      if (t.status == TournamentStatus.registration && onSignIn != null)
+        FilledButton.icon(
+          onPressed: onSignIn,
+          icon: const Icon(Icons.how_to_reg),
+          label: const Text('Zum Teilnehmen anmelden'),
+        ),
       if (t.status == TournamentStatus.registration && can(role, Permission.joinTournament) && user.playerId != null && !registered)
         FilledButton.icon(
           key: const Key('registerSelf'),
           icon: const Icon(Icons.how_to_reg),
-          label: const Text('Anmelden'),
+          label: const Text('Teilnehmen'),
           onPressed: () => _run(context, () async {
             final players = await repo.watchPlayers().first;
             final me = players.firstWhere((p) => p.id == user.playerId);
@@ -842,7 +927,10 @@ class _Schedule extends StatelessWidget {
           final pm = plan.playable.where((p) => p.id == planMatchId).firstOrNull;
           final live = running[planMatchId];
           if (live != null) {
-            Navigator.push(context, MaterialPageRoute(builder: (_) => ScoringScreen(matchId: live.id)));
+            Navigator.push(context, MaterialPageRoute(builder: (_) =>
+              can(role, Permission.enterScores)
+                  ? ScoringScreen(matchId: live.id)
+                  : LiveMatchScreen(matchId: live.id)));
             return;
           }
           if (pm == null || !canStart) return;
@@ -1016,6 +1104,7 @@ class _MatchesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repo = context.read<AppRepository>();
+    final tablets = context.read<AppServices>().tablets;
     return StreamBuilder<List<MatchRecord>>(
       stream: repo.watchMatches(tournamentId: t.id),
       builder: (context, snap) {
@@ -1041,9 +1130,18 @@ class _MatchesTab extends StatelessWidget {
                 ]),
               ),
             ),
+          if (tablets != null && can(role, Permission.manageBoards))
+            BoardTabletControls(tablets: tablets, tournament: t, appUri: _appUri()),
           const SizedBox(height: 12),
           if (list.isEmpty) const _Hint('Noch keine Begegnung gestartet.'),
-          for (final m in list) MatchTile(match: m),
+          for (final m in list)
+            MatchTile(
+              match: m,
+              onCorrect: can(role, Permission.correctResult) &&
+                      m.status == MatchStatus.confirmed && m.players.length == 2
+                  ? () => showResultCorrection(context, m)
+                  : null,
+            ),
         ]);
       },
     );

@@ -7,7 +7,7 @@ Node.js ≥ 20, optional Java (für Emulator-Tests), `npm i -g firebase-tools`.
 
 1. In der [Firebase-Konsole](https://console.firebase.google.com) ein Projekt erstellen.
 2. **Authentication → Anmeldemethode → E-Mail/Passwort** aktivieren.
-   (Optional **Anonym** aktivieren, wenn Zuschauer ohne Konto öffentliche Turniere sehen sollen.)
+   **Anonym** zusätzlich für Board-Tablets und den Gastzugang über den Startbildschirm aktivieren.
 3. **Firestore Database → Datenbank erstellen** (Produktionsmodus, Region z. B. `eur3`).
 4. **Hosting** aktivieren (nur beim ersten `firebase deploy` nötig).
 5. *(Optional, für Cloud Functions)* Tarif auf **Blaze** umstellen.
@@ -68,6 +68,38 @@ cd rules-tests && npm ci && npm test        # startet seinen eigenen Emulator
 
 ## Spieler einladen
 
-Turnier öffnen → QR-Symbol: zeigt **Einladungscode** und **QR-Code** (Link `…/?join=CODE`). Wird die Web-App
-unter einer festen Adresse betrieben, beim Build `--dart-define=APP_BASE_URL=https://dein-projekt.web.app/`
-setzen. Öffnet ein Spieler den Link, erscheint nach der Anmeldung der Beitritts-Dialog.
+Das QR-Symbol im Turnier zeigt **Einladungscode**, **Turnierlink** und **QR-Code**.
+Für native Builds `--dart-define=APP_BASE_URL=https://dein-projekt.web.app/`
+setzen. Die Web-App verwendet ohne diesen Wert ihre aktuelle Adresse.
+
+### Turnierlinks und Zugriffsrechte
+
+Öffentliche Turniere können direkt über den Turnierlink im Browser angesehen
+werden. Ein Konto ist für die Teilnahme erforderlich. Für private Turniere
+brauchen Spieler ein Konto und einen privaten Einladungslink, einen gültigen
+Code oder eine bereits zugewiesene Turnierrolle. Der Link öffnet die Ansicht
+auch nach Ende der Anmeldephase. Die Schaltfläche „Teilnehmen“ erscheint
+während der Anmeldephase in der Übersicht.
+
+Bei einem bereits vorhandenen privaten Turnier aktualisiert die Turnierleitung
+den Code-Index einmalig über das QR-Symbol. Neue private Turniere haben einen
+zwölfstelligen Code. Nach dem Update müssen auch die Firestore-Regeln und
+-Indizes bereitgestellt werden. Alte Web-Clients nutzen möglicherweise noch
+die früheren, jetzt gesperrten Abfragen. Stelle daher die neue Web-App
+gemeinsam mit Regeln und Indizes bereit.
+
+### Board-Tablets
+
+1. In Firebase **Authentication → Anmeldemethode → Anonym** aktivieren.
+2. In der Web-App als Turnierleitung das Turnier öffnen. Unter **Spiele →
+   Board-Tablets** beim Zielboard **QR-Code** wählen.
+3. Den Code auf dem Tablet scannen und die Kopplung im Browser bestätigen.
+   Der Einmalcode gilt zehn Minuten. Die Zuordnung bleibt in diesem
+   Browserprofil gespeichert.
+4. Sobald eine Begegnung am Board gestartet wird, öffnet sich die
+   Punkteeingabe. Nach dem Senden wartet das Tablet auf die Bestätigung der
+   Turnierleitung und anschließend auf die nächste Begegnung.
+
+Über **Tablet trennen** widerruft die Turnierleitung den Zugriff. Danach kann
+für dasselbe Board ein neues Tablet gekoppelt werden. Der Modus verwendet
+die reguläre Firebase-Synchronisierung der App und benötigt eine Verbindung.
