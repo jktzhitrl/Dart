@@ -82,10 +82,13 @@ class _BoardCallState extends State<BoardCall> {
                               dismiss();
                               widget.openMatch(match.id);
                             },
-                            trailing: IconButton(
-                              tooltip: 'Spielaufruf schließen',
-                              onPressed: dismiss,
-                              icon: const Icon(Icons.close),
+                            trailing: Semantics(
+                              label: 'Spielaufruf schließen',
+                              child: IconButton(
+                                key: const Key('dismissBoardCall'),
+                                onPressed: dismiss,
+                                icon: const Icon(Icons.close),
+                              ),
                             ),
                           ),
                         ),

@@ -211,7 +211,7 @@ void main() {
     await settle(tester);
     expect(find.text('Jetzt an Board 1'), findsOneWidget);
     expect(find.text('Gegen Bob'), findsOneWidget);
-    await tester.tap(find.byTooltip('Spielaufruf schließen'));
+    await tester.tap(find.byKey(const Key('dismissBoardCall')));
     await settle(tester);
     expect(find.text('Jetzt an Board 1'), findsNothing);
   });
