@@ -6,9 +6,11 @@ import 'bootstrap.dart';
 import 'data/auth_service.dart';
 import 'core/auth/permissions.dart';
 import 'data/models.dart';
+import 'data/board_tablets.dart';
 import 'data/repository.dart';
 import 'data/services.dart';
 import 'ui/screens/home_shell.dart';
+import 'ui/screens/board_tablet_screen.dart';
 import 'ui/screens/login_screen.dart';
 import 'ui/screens/live_screen.dart';
 import 'ui/screens/tournament_screens.dart';
@@ -95,6 +97,19 @@ class _AuthGateState extends State<AuthGate> {
       builder: (context, snap) {
         final user = snap.data;
         final link = kIsWeb ? Uri.base.queryParameters : const <String, String>{};
+        final boardTournament = link['tablet'];
+        final boardId = link['board'];
+        final boardIndex = int.tryParse(link['slot'] ?? '');
+        final code = link['pair'];
+        if (context.read<AppServices>().tablets != null &&
+            boardTournament != null && RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(boardTournament) &&
+            boardId != null && RegExp(r'^b[1-9][0-9]*$').hasMatch(boardId) &&
+            boardIndex != null && boardIndex >= 0 && boardIndex < 16 &&
+            code != null && RegExp(r'^[0-9a-v]{20}$').hasMatch(code)) {
+          return BoardTabletScreen(
+            tablet: BoardTablet(boardTournament, boardId, boardIndex, code: code),
+          );
+        }
         final tournamentId = link['tournament'];
         if (user == null) {
           if (!_showLogin && context.read<AppRepository>().isRemote &&
@@ -110,8 +125,36 @@ class _AuthGateState extends State<AuthGate> {
         if (user.role == Role.spectator && link.containsKey('invite')) {
           return const LoginScreen();
         }
+        final tablets = context.read<AppServices>().tablets;
+        if (tablets != null && user.role == Role.spectator && link.isEmpty) {
+          return _GuestHome(key: ValueKey(user.uid), tablets: tablets, uid: user.uid);
+        }
         return HomeShell(key: ValueKey(user.uid));
       },
     );
   }
+}
+
+class _GuestHome extends StatefulWidget {
+  final BoardTablets tablets;
+  final String uid;
+  const _GuestHome({super.key, required this.tablets, required this.uid});
+
+  @override
+  State<_GuestHome> createState() => _GuestHomeState();
+}
+
+class _GuestHomeState extends State<_GuestHome> {
+  late final _device = widget.tablets.watchDevice(widget.uid);
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<BoardTablet?>(
+    stream: _device,
+    builder: (context, snapshot) {
+      final station = snapshot.data;
+      return station == null
+          ? HomeShell(key: ValueKey(widget.uid))
+          : BoardTabletScreen(tablet: station);
+    },
+  );
 }

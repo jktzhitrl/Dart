@@ -19,7 +19,8 @@ enum _InputKind { board, buttons, total }
 ///  * Modus B: nur Gesamtpunkte je Aufnahme
 class ScoringScreen extends StatefulWidget {
   final String matchId;
-  const ScoringScreen({super.key, required this.matchId});
+  final String? boardTablet;
+  const ScoringScreen({super.key, required this.matchId, this.boardTablet});
 
   @override
   State<ScoringScreen> createState() => _ScoringScreenState();
@@ -37,7 +38,11 @@ class _ScoringScreenState extends State<ScoringScreen> {
   void initState() {
     super.initState();
     _stream = context.read<AppRepository>().watchMatch(widget.matchId);
-    _loadMeta();
+    if (widget.boardTablet == null) {
+      _loadMeta();
+    } else {
+      _roleLoaded = true;
+    }
   }
 
   Future<void> _loadMeta() async {
@@ -53,6 +58,7 @@ class _ScoringScreenState extends State<ScoringScreen> {
   }
 
   bool _canScore(MatchRecord m, AppUser user) {
+    if (widget.boardTablet != null) return true;
     final role = effectiveRole(user.role, _tournamentRole);
     if (m.tournamentId == null) return role != Role.spectator; // Freundschaftsspiel
     return can(role, Permission.enterScores);
@@ -187,7 +193,16 @@ class _ScoringScreenState extends State<ScoringScreen> {
 
   Future<void> _submitResult(MatchRecord m) async {
     try {
-      await context.read<TournamentService>().submitResult(context.read<AppUser>(), m);
+      if (widget.boardTablet == null) {
+        await context.read<TournamentService>().submitResult(context.read<AppUser>(), m);
+      } else {
+        await context.read<AppRepository>().updateMatch(m.id, (current) {
+          if (!current.isFinished || current.status != MatchStatus.live) {
+            throw StateError('Das Ergebnis kann nicht eingereicht werden.');
+          }
+          return current.copyWith(status: MatchStatus.awaitingConfirmation);
+        }, expectedVersion: m.version);
+      }
       _toast('Ergebnis zur Bestätigung übermittelt.');
     } on VersionConflict {
       _toast('Spielstand wurde zwischenzeitlich geändert.', error: true);
@@ -240,9 +255,10 @@ class _ScoringScreenState extends State<ScoringScreen> {
 
         return Scaffold(
           appBar: AppBar(
-            title: Text(m.players.map((p) => p.name).join(' – ')),
+            title: Text([if (widget.boardTablet != null) widget.boardTablet!,
+              m.players.map((p) => p.name).join(' – ')].join(' · ')),
             actions: [
-              IconButton(
+              if (widget.boardTablet == null) IconButton(
                 tooltip: 'TV-Modus',
                 icon: const Icon(Icons.tv),
                 onPressed: () => Navigator.push(context,

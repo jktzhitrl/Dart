@@ -7,7 +7,7 @@ Node.js ≥ 20, optional Java (für Emulator-Tests), `npm i -g firebase-tools`.
 
 1. In der [Firebase-Konsole](https://console.firebase.google.com) ein Projekt erstellen.
 2. **Authentication → Anmeldemethode → E-Mail/Passwort** aktivieren.
-   (Optional **Anonym** aktivieren, wenn Zuschauer ohne Konto öffentliche Turniere sehen sollen.)
+   **Anonym** zusätzlich für Board-Tablets und den Gastzugang über den Startbildschirm aktivieren.
 3. **Firestore Database → Datenbank erstellen** (Produktionsmodus, Region z. B. `eur3`).
 4. **Hosting** aktivieren (nur beim ersten `firebase deploy` nötig).
 5. *(Optional, für Cloud Functions)* Tarif auf **Blaze** umstellen.
@@ -87,3 +87,19 @@ zwölfstelligen Code. Nach dem Update müssen auch die Firestore-Regeln und
 -Indizes bereitgestellt werden. Alte Web-Clients nutzen möglicherweise noch
 die früheren, jetzt gesperrten Abfragen. Stelle daher die neue Web-App
 gemeinsam mit Regeln und Indizes bereit.
+
+### Board-Tablets
+
+1. In Firebase **Authentication → Anmeldemethode → Anonym** aktivieren.
+2. In der Web-App als Turnierleitung das Turnier öffnen. Unter **Spiele →
+   Board-Tablets** beim Zielboard **QR-Code** wählen.
+3. Den Code auf dem Tablet scannen und die Kopplung im Browser bestätigen.
+   Der Einmalcode gilt zehn Minuten. Die Zuordnung bleibt in diesem
+   Browserprofil gespeichert.
+4. Sobald eine Begegnung am Board gestartet wird, öffnet sich die
+   Punkteeingabe. Nach dem Senden wartet das Tablet auf die Bestätigung der
+   Turnierleitung und anschließend auf die nächste Begegnung.
+
+Über **Tablet trennen** widerruft die Turnierleitung den Zugriff. Danach kann
+für dasselbe Board ein neues Tablet gekoppelt werden. Der Modus verwendet
+die reguläre Firebase-Synchronisierung der App und benötigt eine Verbindung.

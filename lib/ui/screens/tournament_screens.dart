@@ -16,6 +16,8 @@ import '../theme.dart';
 import '../widgets/bracket_view.dart';
 import '../widgets/standings_table.dart';
 import '../widgets/tournament_export_button.dart';
+import '../widgets/board_tablet_controls.dart';
+import '../../bootstrap.dart';
 import 'live_screen.dart';
 import 'result_correction.dart';
 import 'new_match_screen.dart';
@@ -25,11 +27,15 @@ const String _baseUrl = String.fromEnvironment('APP_BASE_URL');
 
 /// Öffentliche Links öffnen die Ansicht; private Links geben eingeladenen
 /// Konten Lesezugriff, unabhängig von der Anmeldung als Turnierteilnehmer.
-String inviteLink(TournamentRecord t) {
+Uri _appUri() {
   var base = _baseUrl;
   if (base.isEmpty && kIsWeb) base = Uri.base.origin + Uri.base.path;
   if (base.isEmpty) base = 'https://example.web.app/';
-  final uri = Uri.parse(base);
+  return Uri.parse(base);
+}
+
+String inviteLink(TournamentRecord t) {
+  final uri = _appUri();
   return uri.replace(queryParameters: {
     ...uri.queryParameters,
     'tournament': t.id,
@@ -1098,6 +1104,7 @@ class _MatchesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final repo = context.read<AppRepository>();
+    final tablets = context.read<AppServices>().tablets;
     return StreamBuilder<List<MatchRecord>>(
       stream: repo.watchMatches(tournamentId: t.id),
       builder: (context, snap) {
@@ -1123,6 +1130,8 @@ class _MatchesTab extends StatelessWidget {
                 ]),
               ),
             ),
+          if (tablets != null && can(role, Permission.manageBoards))
+            BoardTabletControls(tablets: tablets, tournament: t, appUri: _appUri()),
           const SizedBox(height: 12),
           if (list.isEmpty) const _Hint('Noch keine Begegnung gestartet.'),
           for (final m in list)

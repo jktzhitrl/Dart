@@ -37,6 +37,30 @@ service cloud.firestore {
     function tournament(tid) {
       return get(/databases/$(database)/documents/tournaments/$(tid)).data;
     }
+    function devicePath(deviceUid) {
+      return /databases/$(database)/documents/board_devices/$(deviceUid);
+    }
+    function tabletPath(tid, boardId) {
+      return /databases/$(database)/documents/tournaments/$(tid)/tablets/$(boardId);
+    }
+    function isTablet() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+    function tabletAt(tid, boardId) {
+      let device = get(devicePath(uid())).data;
+      return device.tournamentId == tid && device.boardId == boardId
+        && get(tabletPath(tid, boardId)).data.deviceUid == uid();
+    }
+    function tabletIn(tid) {
+      return isTablet() && exists(devicePath(uid()))
+        && tabletAt(tid, get(devicePath(uid())).data.boardId);
+    }
+    function tabletScores(mid, game) {
+      let device = get(devicePath(uid())).data;
+      let board = tournament(game.tournamentId).boards[device.boardIndex];
+      return board.id == game.boardId && board.currentMatchId == mid;
+    }
+
     function isDirector(tid) {
       return isAdmin() || (isMember(tid) && memberRole(tid) == 'director');
     }
@@ -110,7 +134,8 @@ service cloud.firestore {
 
     // -------------------------------------------------------------- tournaments
     match /tournaments/{tid} {
-      allow read: if isAdmin() || isMember(tid) || resource.data.isPublic == true;
+      allow get: if isAdmin() || isMember(tid) || resource.data.isPublic == true || tabletIn(tid);
+      allow list: if isAdmin() || isMember(tid) || resource.data.isPublic == true;
 
       // Nur Admins legen Turniere an; Start immer mit version 1.
       allow create: if isAdmin()
@@ -135,6 +160,38 @@ service cloud.firestore {
         );
       allow delete: if isAdmin();
 
+      match /tablets/{boardId} {
+        function validLocation() {
+          let data = request.resource.data;
+          return data.tournamentId == tid && data.boardId == boardId
+            && data.boardIndex is int && data.boardIndex >= 0
+            && tournament(tid).boards[data.boardIndex].id == boardId;
+        }
+
+        allow get: if isDirector(tid)
+          || (isTablet() && resource.data.deviceUid == uid() && tabletAt(tid, boardId));
+        allow list: if isDirector(tid);
+        allow create, update: if isDirector(tid) && validLocation()
+          && (resource == null || resource.data.deviceUid == null)
+          && request.resource.data.keys().hasOnly(
+              ['tournamentId', 'boardId', 'boardIndex', 'deviceUid', 'code', 'expiresAt'])
+          && request.resource.data.deviceUid == null
+          && request.resource.data.code is string && request.resource.data.code.size() == 20
+          && request.resource.data.expiresAt > request.time
+          && request.resource.data.expiresAt < request.time + duration.value(12, 'm');
+        allow update: if isTablet() && resource.data.deviceUid == null
+          && resource.data.expiresAt > request.time
+          && request.resource.data.deviceUid == uid()
+          && request.resource.data.proof == resource.data.code
+          && onlyChanges(['deviceUid', 'proof'])
+          && getAfter(devicePath(uid())).data.tournamentId == tid
+          && getAfter(devicePath(uid())).data.boardId == boardId
+          && getAfter(devicePath(uid())).data.boardIndex == resource.data.boardIndex;
+        allow delete: if isDirector(tid) || (isTablet()
+          && resource.data.deviceUid == uid() && tabletAt(tid, boardId)
+          && !existsAfter(devicePath(uid())));
+      }
+
       match /members/{memberId} {
         allow read: if signedIn() && (isAdmin() || isMember(tid) || memberId == uid());
         // Leitung vergibt Schreiber/Spieler; nur Admin vergibt Leitung. Selbst: nur 'player'.
@@ -154,6 +211,22 @@ service cloud.firestore {
       allow list: if hasAccount() && resource.data.uid == uid();
     }
 
+    match /board_devices/{deviceUid} {
+      function validPair() {
+        let row = request.resource.data;
+        let board = getAfter(tabletPath(row.tournamentId, row.boardId)).data;
+        return row.keys().hasOnly(['tournamentId', 'boardId', 'boardIndex'])
+          && row.boardIndex is int && row.boardIndex >= 0
+          && board.deviceUid == deviceUid && board.boardIndex == row.boardIndex;
+      }
+      allow get, delete: if isTablet() && uid() == deviceUid;
+      allow create: if isTablet() && uid() == deviceUid && validPair();
+      allow update: if isTablet() && uid() == deviceUid && validPair()
+        && (request.resource.data == resource.data
+          || !exists(tabletPath(resource.data.tournamentId, resource.data.boardId))
+          || get(tabletPath(resource.data.tournamentId, resource.data.boardId)).data.deviceUid != deviceUid);
+    }
+
     match /tournament_invites/{code} {
       allow get: if hasAccount();
       allow create, update: if request.resource.data.keys().hasOnly(['tournamentId'])
@@ -167,6 +240,21 @@ service cloud.firestore {
       allow read: if resource.data.isPublic == true || isAdmin()
         || (resource.data.tournamentId != null && isMember(resource.data.tournamentId))
         || (hasAccount() && resource.data.tournamentId == null && resource.data.scorerUid == uid());
+
+      allow get: if isTablet() && resource.data.tournamentId != null
+        && resource.data.boardId != null
+        && tabletAt(resource.data.tournamentId, resource.data.boardId)
+        && tabletScores(mid, resource.data);
+
+      allow update: if isTablet() && resource.data.tournamentId != null
+        && resource.data.boardId != null
+        && tabletAt(resource.data.tournamentId, resource.data.boardId)
+        && tabletScores(mid, resource.data)
+        && versionBumped() && x01Plausible()
+        && resource.data.status in ['live', 'paused', 'awaitingConfirmation']
+        && request.resource.data.status in ['live', 'paused', 'awaitingConfirmation']
+        && (request.resource.data.status != 'awaitingConfirmation' || request.resource.data.winnerId != null)
+        && onlyChanges(['status', 'version', 'updatedAt', 'winnerId', 'x01', 'cricket', 'clock', 'draft']);
 
       // Turnier-Begegnung: Schreiber/Leitung. Freundschaftsspiel: jeder Angemeldete.
       allow create: if hasAccount() && request.resource.data.version == 0
