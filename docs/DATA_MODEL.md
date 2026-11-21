@@ -6,7 +6,8 @@
 | `players/{id}` | `PlayerProfile` | `name`, `uid` (oder `null` = Gast), `favoriteDouble` |
 | `tournaments/{id}` | `TournamentRecord` | `name`, `format`, `gameType`, `rules`, `isPublic`, `status`, `inviteCode`, `registrations[]`, **`plan`** (Auslosung/Turnierstand), `published`, `boards[]`, `version` |
 | `tournaments/{id}/members/{uid}` | `TournamentMember` | Rolle im Turnier (`player`/`scorer`/`director`) |
-| `matches/{id}` | `MatchRecord` | `tournamentId`, `planMatchId`, `gameType`, `players[]`, `status`, `boardId`, `scorerUid`, `version`, `draft[]`, **`x01`** / `cricket` / `clock`, `winnerId`, `isPublic` |
+| `tournament_invites/{code}` | Einladungscode | `tournamentId`; einzelne Codes sind nur für angemeldete Konten abrufbar |
+| `matches/{id}` | `MatchRecord` | `tournamentId`, `planMatchId`, `gameType`, `players[]`, `status`, `boardId`, `scorerUid`, `version`, `draft[]`, **`x01`** / `cricket` / `clock`, `winnerId`, `isPublic`, optionale `correction` mit offiziellem Leg-Ergebnis |
 | `audit_logs/{id}` | `AuditEntry` | `at`, `uid`, `action`, `tournamentId`, `matchId`, `detail` – append-only |
 
 ## Zuordnung zur Anforderungsliste
@@ -49,13 +50,14 @@ Darts sind als Zahl codiert, weil Firestore **keine verschachtelten Arrays** erl
   Plausibilität (Punkte 0–180, Darts 1–3, höchstens eine neue Aufnahme je Schreibvorgang).
 * **Versionssperre:** Updates müssen `version == alt + 1` setzen.
 * **Audit-Log:** nur anhängen, nur mit eigener `uid`.
-* **Lesen:** Angemeldete sehen alle Turniere/Spiele (Datenschutzgrenze = Konto); Nicht-Angemeldete nur
-  Dokumente mit `isPublic == true` (Zuschauer-Link, Abfrage `where isPublic == true`). Private Turniere pro
-  Teilnehmerkreis würden Custom Claims bzw. Gruppenabfragen erfordern – bewusst nicht umgesetzt.
-
-29 Tests in `rules-tests/rules.test.mjs` prüfen das gegen den Firestore-Emulator.
+* **Lesen:** Öffentliche Turniere und Spiele sind für Gäste lesbar. Private Turniere und ihre Spiele
+  sehen nur Mitglieder und Admins. Anonyme Zuschauer erhalten keine Spielerprofile.
+* **Korrekturen:** Bei geänderten Paarungen bleiben die annullierten Begegnungen samt Wurfprotokoll
+  gespeichert. Der Spielplan, die betroffenen Begegnungen und der Audit-Eintrag ändern sich gemeinsam.
+  Korrigierte Spiele zählen mit dem offiziellen Sieger; die daraus nicht zuverlässig ableitbaren
+  Wurfstatistiken bleiben bei der Berechnung außen vor.
 
 ## Indizes
 
-`firestore.indexes.json`: `tournaments(createdAt ↓)` und `matches(tournamentId ↑, updatedAt ↓)`.
-Die App sortiert Matches clientseitig; der zweite Index erlaubt serverseitig sortierte Abfragen.
+`firestore.indexes.json` enthält den Collection-Group-Index `members.uid` für die Suche nach
+eigenen Turniermitgliedschaften sowie die Indizes für die vorhandenen Turnier- und Spielabfragen.

@@ -42,6 +42,9 @@ class LiveScreen extends StatelessWidget {
 }
 
 String matchSummaryLine(MatchRecord m) {
+  if (m.correction case final result?) {
+    return '${result.legsA} : ${result.legsB} Legs · korrigiert';
+  }
   final x = m.x01;
   if (x != null) {
     final s = x.state;
@@ -56,7 +59,8 @@ String matchSummaryLine(MatchRecord m) {
 
 class MatchTile extends StatelessWidget {
   final MatchRecord match;
-  const MatchTile({super.key, required this.match});
+  final VoidCallback? onCorrect;
+  const MatchTile({super.key, required this.match, this.onCorrect});
   @override
   Widget build(BuildContext context) {
     final m = match;
@@ -73,7 +77,13 @@ class MatchTile extends StatelessWidget {
               color: m.status == MatchStatus.live ? AppColors.danger : AppColors.textDim),
           title: Text(m.players.map((p) => p.name).join('  –  ')),
           subtitle: Text(matchSummaryLine(m)),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: onCorrect == null
+              ? const Icon(Icons.chevron_right)
+              : IconButton(
+                  tooltip: 'Ergebnis korrigieren',
+                  icon: const Icon(Icons.edit_note),
+                  onPressed: onCorrect,
+                ),
           onTap: () => Navigator.push(
               context, MaterialPageRoute(builder: (_) => LiveMatchScreen(matchId: m.id))),
         ),
@@ -126,17 +136,21 @@ class _LiveMatchScreenState extends State<LiveMatchScreen> {
                   IconButton(
                     tooltip: 'Eingabe',
                     icon: const Icon(Icons.edit_note),
-                    onPressed: m == null
+                    onPressed: context.watch<AppUser>().uid.isEmpty || m == null || m.status == MatchStatus.voided || m.correction != null
                         ? null
                         : () => Navigator.push(context,
                             MaterialPageRoute(builder: (_) => ScoringScreen(matchId: m.id))),
                   ),
                 ]),
           body: SafeArea(
-            child: !snap.hasData
-                ? const Center(child: CircularProgressIndicator())
+            child: snap.hasError || (m == null && snap.connectionState != ConnectionState.waiting)
+                ? const Center(child: Text('Begegnung nicht verfügbar'))
                 : m == null
-                    ? const Center(child: Text('Begegnung nicht gefunden'))
+                    ? const Center(child: CircularProgressIndicator())
+                    : m.status == MatchStatus.voided
+                        ? const Center(child: Text('Diese Begegnung wurde annulliert.'))
+                        : m.correction != null
+                            ? Center(child: Text('${matchSummaryLine(m)} · Sieger: ${m.players[m.winnerIndex!].name}'))
                     : Stack(children: [
                         SingleChildScrollView(
                           padding: EdgeInsets.all(_tv ? 32 : 16),

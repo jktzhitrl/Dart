@@ -16,11 +16,14 @@ service cloud.firestore {
 
     // ------------------------------------------------------------ Hilfsfunktionen
     function signedIn() { return request.auth != null; }
+    function hasAccount() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
     function uid() { return request.auth.uid; }
 
     function userDoc() { return get(/databases/$(database)/documents/users/$(uid())).data; }
     function globalRole() {
-      return signedIn() && exists(/databases/$(database)/documents/users/$(uid()))
+      return hasAccount() && exists(/databases/$(database)/documents/users/$(uid()))
         ? userDoc().role : 'spectator';
     }
     function isAdmin() { return globalRole() == 'admin'; }
@@ -28,9 +31,12 @@ service cloud.firestore {
     function memberPath(tid) {
       return /databases/$(database)/documents/tournaments/$(tid)/members/$(uid());
     }
-    function isMember(tid) { return signedIn() && exists(memberPath(tid)); }
+    function isMember(tid) { return hasAccount() && exists(memberPath(tid)); }
     function memberRole(tid) { return get(memberPath(tid)).data.role; }
 
+    function tournament(tid) {
+      return get(/databases/$(database)/documents/tournaments/$(tid)).data;
+    }
     function isDirector(tid) {
       return isAdmin() || (isMember(tid) && memberRole(tid) == 'director');
     }
@@ -54,6 +60,16 @@ service cloud.firestore {
                     && lastVisit(request.resource.data).dartsThrown <= 3)));
     }
 
+    function validCorrection() {
+      let result = request.resource.data.get('correction', {});
+      return resource.data.status == 'confirmed' && request.resource.data.status == 'confirmed'
+        && result.keys().hasOnly(['legsA', 'legsB', 'winnerIndex'])
+        && result.legsA is int && result.legsB is int
+        && result.legsA >= 0 && result.legsB >= 0 && result.winnerIndex in [0, 1]
+        && request.resource.data.winnerId == resource.data.playerIds[result.winnerIndex]
+        && onlyChanges(['correction', 'winnerId', 'version', 'updatedAt']);
+    }
+
     function versionBumped() {
       return request.resource.data.version == resource.data.version + 1;
     }
@@ -68,7 +84,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn() && (userId == uid() || isAdmin());
       // Neue Konten starten IMMER als 'player' - keine Selbstvergabe von Rechten.
-      allow create: if signedIn() && userId == uid()
+      allow create: if hasAccount() && userId == uid()
         && request.resource.data.uid == uid()
         && request.resource.data.role == 'player';
       allow update: if signedIn() && (
@@ -80,11 +96,11 @@ service cloud.firestore {
 
     // ------------------------------------------------------------------ players
     match /players/{playerId} {
-      allow read: if signedIn();
-      allow create: if signedIn()
+      allow read: if hasAccount();
+      allow create: if hasAccount()
         && request.resource.data.id == playerId
         && (request.resource.data.uid == null || request.resource.data.uid == uid());
-      allow update: if signedIn() && request.resource.data.id == playerId && (
+      allow update: if hasAccount() && request.resource.data.id == playerId && (
         resource.data.uid == uid()
         || isAdmin()
         || (resource.data.uid == null && globalRole() in ['scorer', 'director']))
@@ -94,10 +110,7 @@ service cloud.firestore {
 
     // -------------------------------------------------------------- tournaments
     match /tournaments/{tid} {
-      // Datenschutzgrenze ist das Benutzerkonto: Angemeldete sehen alle Turniere
-      // (nötig für Einladungscode-Suche und Listen); nicht angemeldete Zuschauer
-      // nur Turniere mit isPublic == true (Abfrage mit where isPublic == true).
-      allow read: if resource.data.isPublic == true || signedIn();
+      allow read: if isAdmin() || isMember(tid) || resource.data.isPublic == true;
 
       // Nur Admins legen Turniere an; Start immer mit version 1.
       allow create: if isAdmin()
@@ -105,14 +118,16 @@ service cloud.firestore {
         && request.resource.data.version == 1;
 
       allow update: if signedIn() && versionBumped()
-        && unchanged(['createdBy', 'inviteCode', 'format', 'gameType', 'createdAt', 'id'])
+        && unchanged(['createdBy', 'inviteCode', 'format', 'gameType', 'createdAt', 'id', 'isPublic'])
         && (
           // Turnierleitung: alles
           isDirector(tid)
           // Selbstanmeldung: genau ein Teilnehmer hinzufügen, nur in der Anmeldephase
-          || (onlyChanges(['registrations', 'version'])
+          || (hasAccount() && (resource.data.isPublic || isMember(tid))
+              && onlyChanges(['registrations', 'version'])
               && resource.data.status == 'registration'
               && request.resource.data.registrations.size() == resource.data.registrations.size() + 1
+              && request.resource.data.registrations.hasAll(resource.data.registrations)
               && request.resource.data.registrations[request.resource.data.registrations.size() - 1].id
                   == userDoc().playerId)
           // Schreiber: nur Boardbelegung
@@ -123,36 +138,61 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read: if signedIn() && (isAdmin() || isMember(tid) || memberId == uid());
         // Leitung vergibt Schreiber/Spieler; nur Admin vergibt Leitung. Selbst: nur 'player'.
-        allow create, update: if signedIn() && request.resource.data.uid == memberId && (
+        allow create, update: if hasAccount() && request.resource.data.uid == memberId && (
           isAdmin()
           || (isDirector(tid) && request.resource.data.role in ['player', 'scorer'])
           || (memberId == uid() && request.resource.data.role == 'player'
-              && !exists(memberPath(tid))));
+              && !exists(memberPath(tid))
+              && (tournament(tid).isPublic
+                  || request.resource.data.get('inviteCode', '') == tournament(tid).inviteCode)));
         allow delete: if isDirector(tid);
       }
     }
 
+    // Für die eigenen Mitgliedschaften darf nach uid über alle Turniere gesucht werden.
+    match /{parent=**}/members/{memberId} {
+      allow list: if hasAccount() && resource.data.uid == uid();
+    }
+
+    match /tournament_invites/{code} {
+      allow get: if hasAccount();
+      allow create, update: if request.resource.data.keys().hasOnly(['tournamentId'])
+        && isDirector(request.resource.data.tournamentId)
+        && getAfter(/databases/$(database)/documents/tournaments/$(request.resource.data.tournamentId)).data.inviteCode == code
+        && (resource == null || resource.data.tournamentId == request.resource.data.tournamentId);
+    }
+
     // ------------------------------------------------------------------ matches
     match /matches/{mid} {
-      allow read: if resource.data.isPublic == true || signedIn();
+      allow read: if resource.data.isPublic == true || isAdmin()
+        || (resource.data.tournamentId != null && isMember(resource.data.tournamentId))
+        || (hasAccount() && resource.data.tournamentId == null && resource.data.scorerUid == uid());
 
       // Turnier-Begegnung: Schreiber/Leitung. Freundschaftsspiel: jeder Angemeldete.
-      allow create: if signedIn() && request.resource.data.version == 0 && (
+      allow create: if hasAccount() && request.resource.data.version == 0
+        && request.resource.data.status in ['scheduled', 'live']
+        && !request.resource.data.keys().hasAny(['correction']) && (
         request.resource.data.tournamentId == null
           ? request.resource.data.scorerUid == uid()
-          : isStaff(request.resource.data.tournamentId));
+          : isStaff(request.resource.data.tournamentId)
+            && request.resource.data.isPublic == tournament(request.resource.data.tournamentId).isPublic);
 
-      allow update: if signedIn() && versionBumped()
-        && unchanged(['id', 'tournamentId', 'planMatchId', 'gameType', 'players', 'createdAt'])
+      allow update: if hasAccount() && versionBumped()
+        && unchanged(['id', 'tournamentId', 'planMatchId', 'gameType', 'players', 'playerIds', 'createdAt', 'isPublic'])
+        && resource.data.status != 'voided'
+        && (resource.data.tournamentId == null || resource.data.status != 'confirmed'
+            || request.resource.data.status in ['confirmed', 'voided'])
         && (
           resource.data.tournamentId == null
             ? (resource.data.scorerUid == uid() || isAdmin())
             : isStaff(resource.data.tournamentId))
-        // Bestätigen darf nur die Turnierleitung.
-        && (request.resource.data.status != 'confirmed'
-            || resource.data.status == 'confirmed'
-            || resource.data.tournamentId == null
-            || isDirector(resource.data.tournamentId))
+        // Offizielle Änderungen und Annullierungen bleiben der Turnierleitung vorbehalten.
+        && ((request.resource.data.get('correction', null) == resource.data.get('correction', null)
+             && request.resource.data.status != 'voided'
+             && (request.resource.data.status != 'confirmed' || resource.data.tournamentId == null))
+            || (resource.data.tournamentId != null && isDirector(resource.data.tournamentId)
+                && (request.resource.data.get('correction', null) == resource.data.get('correction', null)
+                    || validCorrection())))
         // Eingabe-Plausibilität (nur X01): höchstens eine neue Aufnahme pro Schreibvorgang,
         // Punkte 0..180, Darts 1..3.
         && x01Plausible();
@@ -162,7 +202,7 @@ service cloud.firestore {
 
     // --------------------------------------------------------------- audit_logs
     match /audit_logs/{aid} {
-      allow create: if signedIn() && request.resource.data.uid == uid();
+      allow create: if hasAccount() && request.resource.data.uid == uid();
       allow read: if signedIn() && (isAdmin() || globalRole() == 'director'
         || (resource.data.tournamentId != null && isMember(resource.data.tournamentId)
             && memberRole(resource.data.tournamentId) == 'director'));

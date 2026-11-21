@@ -16,7 +16,6 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
-  static bool _inviteHandled = false;
 
   static const _items = [
     (Icons.dashboard_outlined, Icons.dashboard, 'Dashboard'),
@@ -29,13 +28,13 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    // Einladungslink (?join=CODE) öffnet den Beitritts-Dialog.
-    if (kIsWeb && !_inviteHandled) {
-      final code = Uri.base.queryParameters['join'];
-      if (code != null && code.isNotEmpty) {
-        _inviteHandled = true;
+    if (kIsWeb) {
+      final parameters = Uri.base.queryParameters;
+      final id = parameters['tournament'];
+      final code = parameters['invite'] ?? parameters['join'];
+      if (id != null || code != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) showJoinDialog(context, code: code);
+          if (mounted) openTournamentLink(context, id: id, code: code);
         });
       }
     }

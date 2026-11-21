@@ -309,6 +309,43 @@ class TournamentPlan {
     ];
   }
 
+  /// Reuses the published draw. For Swiss, later rounds may depend on the
+  /// corrected winner, so only rounds through [preserveSwissThrough] are fixed.
+  TournamentPlan resetResults({int? preserveSwissThrough}) {
+    final initial = TournamentPlan.fromJson(toJson());
+    initial.fixtures = [
+      for (final f in fixtures)
+        if (preserveSwissThrough == null || f.round <= preserveSwissThrough)
+          Fixture(id: f.id, round: f.round, homeId: f.homeId, awayId: f.awayId, group: f.group),
+    ];
+    switch (format) {
+      case TournamentFormat.singleElimination:
+      case TournamentFormat.doubleElimination:
+        initial._buildBracket();
+        initial.phase = PlanPhase.knockout;
+      case TournamentFormat.groupsKnockout:
+        initial.bracket = null;
+        initial.positions = const [];
+        initial.phase = PlanPhase.groups;
+      case TournamentFormat.swiss:
+        initial.swissRound = preserveSwissThrough ?? swissRound;
+        initial.phase = PlanPhase.rounds;
+      case TournamentFormat.roundRobin:
+      case TournamentFormat.league:
+      case TournamentFormat.friendly:
+        initial.phase = PlanPhase.rounds;
+    }
+    return initial;
+  }
+
+  /// Resolved pairings, including completed matches.
+  Map<String, (String?, String?)> get pairings => {
+    for (final f in fixtures) f.id: (f.homeId, f.awayId),
+    for (final m in bracket?.matches ?? <BracketMatch>[])
+      if ((m.a.playerId != null || m.b.playerId != null) && !m.isBye && !m.dead)
+        m.id: (m.a.playerId, m.b.playerId),
+  };
+
   bool get isComplete => phase == PlanPhase.finished;
 
   /// Gesamtsieger (K.-o.: Baumsieger; Tabellenformate: Tabellenführer nach Abschluss).

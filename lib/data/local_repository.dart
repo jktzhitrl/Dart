@@ -123,6 +123,50 @@ class LocalRepository implements AppRepository {
   }
 
   @override
+  Future<String?> resolveInvite(AppUser user, String code, {String? tournamentId}) async {
+    final t = tournamentId == null
+        ? await findTournamentByInvite(code)
+        : await watchTournament(tournamentId).first;
+    if (t == null || t.inviteCode != code.trim().toUpperCase()) return null;
+    if (!t.isPublic) {
+      if (user.role == Role.spectator) throw PermissionDenied('Für private Turniere ist ein Konto nötig.');
+      if (await memberRole(t.id, user.uid) == null) {
+        await setMember(t.id, TournamentMember(user.uid, user.displayName, Role.player));
+      }
+    }
+    return t.id;
+  }
+
+  @override
+  Future<void> indexInvite(TournamentRecord t) async {}
+
+  @override
+  Future<TournamentRecord> commitTournamentMatches(
+    TournamentRecord t, {
+    List<MatchRecord> create = const [],
+    List<MatchRecord> update = const [],
+    required AuditEntry audit,
+  }) async {
+    if (_tournaments[t.id]?['version'] != t.version ||
+        create.any((m) => _matches.containsKey(m.id)) ||
+        update.any((m) => _matches[m.id]?['version'] != m.version)) {
+      throw VersionConflict();
+    }
+    final saved = t.copyWith(version: t.version + 1);
+    final now = DateTime.now().toUtc();
+    _tournaments[t.id] = _copy(saved.toJson());
+    for (final m in create) {
+      _matches[m.id] = _copy(m.toJson());
+    }
+    for (final m in update) {
+      _matches[m.id] = _copy(m.copyWith(version: m.version + 1, updatedAt: now).toJson());
+    }
+    _audit.add(audit.toJson());
+    _changed();
+    return saved;
+  }
+
+  @override
   Stream<List<TournamentMember>> watchMembers(String tournamentId) => _watch(() => [
         for (final m in (_members[tournamentId] ?? {}).values) TournamentMember.fromJson(_copy(m))
       ]);
@@ -148,7 +192,9 @@ class LocalRepository implements AppRepository {
   // ------------------------------------------------------------- Begegnungen
 
   List<MatchRecord> _matchList({String? tournamentId, bool liveOnly = false}) {
-    var l = _matches.values.map((m) => MatchRecord.fromJson(_copy(m))).toList();
+    var l = _matches.values
+        .where((m) => m['status'] != MatchStatus.voided.name)
+        .map((m) => MatchRecord.fromJson(_copy(m))).toList();
     if (tournamentId != null) l = l.where((m) => m.tournamentId == tournamentId).toList();
     if (liveOnly) {
       l = l.where((m) => m.status == MatchStatus.live || m.status == MatchStatus.paused).toList();

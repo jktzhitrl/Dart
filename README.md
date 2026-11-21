@@ -20,7 +20,8 @@ und Echtzeit-Ansicht für alle Spieler auf dem eigenen Gerät.
 | Turniere | K.-o., Doppel-K.-o. (mit Grand-Final-Reset), Jeder gegen Jeden, Gruppen + K.-o., Schweizer System, Liga (Hin-/Rückrunde), Freundschaftsspiele |
 | Auslosung | zufällig oder gesetzt, automatische Freilose, konfigurierbare Gruppengröße, **Prüfen/Tauschen vor Veröffentlichung**, automatischer Rundenfortschritt, Boards und Spielpausen |
 | Rollen | Administrator, Turnierleitung, Schreiber/Caller, Spieler, Zuschauer (global und pro Turnier) |
-| Live | Scoreboard auf allen Geräten in Echtzeit, TV-/Beamer-Vollbildmodus, Spielerportal, Einladungslink + QR-Code |
+| Live | Scoreboard in Echtzeit, TV-/Beamer-Vollbildmodus, Spielerportal, Turnierlink und QR-Code, Spielaufruf in der geöffneten App |
+| Turnierabschluss | Ergebniskorrektur mit Vorschau der Folgepaarungen, PDF-/CSV-Export der offiziellen Platzierungen und Ergebnisse |
 
 ## Schnellstart (ohne Server, Demo-Modus)
 

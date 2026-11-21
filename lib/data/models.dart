@@ -209,7 +209,7 @@ class TournamentRecord {
       );
 }
 
-enum MatchStatus { scheduled, live, paused, awaitingConfirmation, confirmed }
+enum MatchStatus { scheduled, live, paused, awaitingConfirmation, confirmed, voided }
 
 class MatchPlayer {
   final String id;
@@ -218,6 +218,21 @@ class MatchPlayer {
   Map<String, dynamic> toJson() => {'id': id, 'name': name};
   factory MatchPlayer.fromJson(Map<String, dynamic> j) =>
       MatchPlayer(j['id'] as String, j['name'] as String);
+}
+
+/// Official legs score in the order of MatchRecord.players.
+class OfficialResult {
+  final int legsA;
+  final int legsB;
+
+  final int winnerIndex;
+
+  const OfficialResult(this.legsA, this.legsB, this.winnerIndex);
+
+  Map<String, int> toJson() => {'legsA': legsA, 'legsB': legsB, 'winnerIndex': winnerIndex};
+
+  factory OfficialResult.fromJson(Map<String, dynamic> j) =>
+      OfficialResult((j['legsA'] as num).toInt(), (j['legsB'] as num).toInt(), (j['winnerIndex'] as num).toInt());
 }
 
 /// Begegnung (Collection `matches`): enthält das komplette Event-Log
@@ -237,6 +252,7 @@ class MatchRecord {
   final DateTime updatedAt;
   final bool isPublic;
 
+  final OfficialResult? correction;
   final X01Match? x01;
   final CricketMatch? cricket;
   final AroundTheClockMatch? clock;
@@ -258,6 +274,7 @@ class MatchRecord {
     this.boardId,
     this.scorerUid,
     this.isPublic = true,
+    this.correction,
     this.x01,
     this.cricket,
     this.clock,
@@ -265,11 +282,20 @@ class MatchRecord {
   });
 
   /// Index des Siegers, falls entschieden.
-  int? get winnerIndex => x01?.state.winnerIndex ?? cricket?.state.winnerIndex ?? clock?.state.winnerIndex;
+  int? get winnerIndex => correction?.winnerIndex ?? x01?.state.winnerIndex ?? cricket?.state.winnerIndex ?? clock?.state.winnerIndex;
   bool get isFinished => winnerIndex != null;
   String? get winnerId => winnerIndex == null ? null : players[winnerIndex!].id;
 
+  (int, int) get legsScore {
+    final official = correction;
+    if (official != null) return (official.legsA, official.legsB);
+    final legs = x01?.state.totalLegsWon;
+    if (legs != null && players.length >= 2) return (legs[0], legs[1]);
+    return (winnerIndex == 0 ? 1 : 0, winnerIndex == 1 ? 1 : 0);
+  }
+
   MatchRecord copyWith({
+    OfficialResult? correction,
     MatchStatus? status,
     String? boardId,
     bool clearBoard = false,
@@ -294,6 +320,7 @@ class MatchRecord {
         createdAt: createdAt,
         updatedAt: updatedAt ?? this.updatedAt,
         isPublic: isPublic,
+        correction: correction ?? this.correction,
         x01: x01 ?? this.x01,
         cricket: cricket ?? this.cricket,
         clock: clock ?? this.clock,
@@ -315,6 +342,7 @@ class MatchRecord {
         'updatedAt': updatedAt.toUtc().toIso8601String(),
         'isPublic': isPublic,
         'winnerId': winnerId,
+        if (correction != null) 'correction': correction!.toJson(),
         'x01': x01?.toJson(),
         'draft': draft.map((d) => d.toJson()).toList(),
         'cricket': cricket == null
@@ -352,6 +380,9 @@ class MatchRecord {
       updatedAt: DateTime.parse(j['updatedAt'] as String),
       isPublic: j['isPublic'] as bool? ?? true,
       draft: [for (final d in (j['draft'] as List? ?? [])) DartThrow.fromJson(d)],
+      correction: j['correction'] == null
+          ? null
+          : OfficialResult.fromJson(Map<String, dynamic>.from(j['correction'] as Map)),
       x01: j['x01'] == null ? null : X01Match.fromJson(Map<String, dynamic>.from(j['x01'] as Map)),
       cricket: c == null
           ? null

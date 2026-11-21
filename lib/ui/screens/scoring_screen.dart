@@ -43,7 +43,7 @@ class _ScoringScreenState extends State<ScoringScreen> {
   Future<void> _loadMeta() async {
     final repo = context.read<AppRepository>();
     final user = context.read<AppUser>();
-    final m = await repo.watchMatch(widget.matchId).first;
+    final m = await repo.watchMatch(widget.matchId).first.onError((_, __) => null);
     if (m?.tournamentId != null) {
       _tournamentRole = await repo.memberRole(m!.tournamentId!, user.uid);
     }
@@ -212,11 +212,18 @@ class _ScoringScreenState extends State<ScoringScreen> {
       stream: _stream,
       builder: (context, snap) {
         final m = snap.data;
-        if (!snap.hasData || !_roleLoaded) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        if (snap.hasError || (m == null && snap.connectionState != ConnectionState.waiting) ||
+            m?.status == MatchStatus.voided || m?.correction != null) {
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(child: Text(
+              m?.status == MatchStatus.voided ? 'Diese Begegnung wurde annulliert.'
+                  : m?.correction != null ? matchSummaryLine(m!) : 'Begegnung nicht verfügbar',
+            )),
+          );
         }
-        if (m == null) {
-          return Scaffold(appBar: AppBar(), body: const Center(child: Text('Begegnung nicht gefunden')));
+        if (m == null || !_roleLoaded) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         final canScore = _canScore(m, user);
         final canConfirm = can(effectiveRole(user.role, _tournamentRole), Permission.confirmResult);

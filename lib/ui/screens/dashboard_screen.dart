@@ -150,7 +150,7 @@ class _NextMatches extends StatelessWidget {
         continue;
       }
       final opp = next.playerIds.firstWhere((id) => id != playerId);
-      final running = matches.where((m) => m.planMatchId == next.id && m.status != MatchStatus.confirmed).firstOrNull;
+      final running = matches.where((m) => m.tournamentId == t.id && m.planMatchId == next.id && m.status != MatchStatus.confirmed).firstOrNull;
       items.add(Card(
         child: ListTile(
           key: Key('next-${next.id}'),
