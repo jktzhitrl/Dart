@@ -92,6 +92,23 @@ class BoardInfo {
       BoardInfo(j['id'] as String, j['name'] as String, currentMatchId: j['currentMatchId'] as String?);
 }
 
+class TournamentTrash {
+  final DateTime movedAt;
+  final bool wasPublic;
+
+  const TournamentTrash(this.movedAt, {required this.wasPublic});
+
+  Map<String, dynamic> toJson() => {
+    'movedAt': movedAt.toUtc().toIso8601String(),
+    'wasPublic': wasPublic,
+  };
+
+  factory TournamentTrash.fromJson(Map<String, dynamic> data) => TournamentTrash(
+    DateTime.parse(data['movedAt'] as String),
+    wasPublic: data['wasPublic'] as bool,
+  );
+}
+
 /// Turnier (Collection `tournaments`).
 class TournamentRecord {
   final String id;
@@ -101,6 +118,7 @@ class TournamentRecord {
   final X01Rules rules;
   final bool isPublic;
   final TournamentStatus status;
+  final TournamentTrash? trash;
   final String inviteCode;
   final String createdBy;
   final DateTime createdAt;
@@ -129,6 +147,7 @@ class TournamentRecord {
     required this.createdAt,
     this.registrations = const [],
     this.plan,
+    this.trash,
     this.published = false,
     this.boards = const [],
     this.version = 0,
@@ -145,6 +164,8 @@ class TournamentRecord {
     bool? published,
     List<BoardInfo>? boards,
     int? version,
+    TournamentTrash? trash,
+    bool restore = false,
   }) =>
       TournamentRecord(
         id: id,
@@ -162,6 +183,7 @@ class TournamentRecord {
         published: published ?? this.published,
         boards: boards ?? this.boards,
         version: version ?? this.version,
+        trash: restore ? null : (trash ?? this.trash),
       );
 
   Map<String, dynamic> toJson() => {
@@ -171,6 +193,7 @@ class TournamentRecord {
         'gameType': gameType.name,
         'rules': rules.toJson(),
         'isPublic': isPublic,
+        if (trash != null) 'trash': trash!.toJson(),
         'status': status.name,
         'inviteCode': inviteCode,
         'createdBy': createdBy,
@@ -189,6 +212,9 @@ class TournamentRecord {
         gameType: GameType.values.byName(j['gameType'] as String),
         rules: X01Rules.fromJson(Map<String, dynamic>.from(j['rules'] as Map)),
         isPublic: j['isPublic'] as bool? ?? false,
+        trash: j['trash'] == null ? null : TournamentTrash.fromJson(
+          Map<String, dynamic>.from(j['trash'] as Map),
+        ),
         status: TournamentStatus.values.byName(j['status'] as String),
         inviteCode: j['inviteCode'] as String,
         createdBy: j['createdBy'] as String,

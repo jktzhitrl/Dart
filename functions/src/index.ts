@@ -39,6 +39,12 @@ export const submitVisit = onCall(async (request) => {
     const m = snap.data()!;
     const tournamentId = (m.tournamentId as string | null) ?? null;
 
+    if (tournamentId) {
+      const tournament = await tx.get(db.doc(`tournaments/${tournamentId}`));
+      if (!tournament.exists || tournament.get('trash') != null) {
+        throw new HttpsError('failed-precondition', 'Turnier ist nicht verfügbar');
+      }
+    }
     const role = await roleFor(uid, tournamentId);
     const allowed = tournamentId
       ? canEnterScores(role)

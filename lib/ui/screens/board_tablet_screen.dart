@@ -192,7 +192,8 @@ class _AssignedBoardState extends State<_AssignedBoard> {
       final board = tournament?.boards
           .where((b) => b.id == widget.tablet.boardId)
           .firstOrNull;
-      final matchId = board?.currentMatchId;
+      final inTrash = tournament?.trash != null;
+      final matchId = inTrash ? null : board?.currentMatchId;
       if (board != null && matchId != null && !snapshot.hasError) {
         return ScoringScreen(
           key: ValueKey(matchId),
@@ -213,7 +214,9 @@ class _AssignedBoardState extends State<_AssignedBoard> {
         ),
         body: Center(
           child: Text(
-            snapshot.hasError
+            inTrash
+                ? 'Dieses Turnier liegt im Papierkorb.'
+                : snapshot.hasError
                 ? 'Board nicht verfügbar.'
                 : board == null
                 ? 'Board wird geladen …'

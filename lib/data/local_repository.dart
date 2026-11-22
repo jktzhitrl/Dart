@@ -91,7 +91,14 @@ class LocalRepository implements AppRepository {
   }
 
   @override
-  Stream<List<TournamentRecord>> watchTournaments() => _watch(_allTournaments);
+  Stream<List<TournamentRecord>> watchTournaments() =>
+      _watch(() => _allTournaments().where((t) => t.trash == null).toList());
+
+  @override
+  Stream<List<TournamentRecord>> watchTrash() => _watch(() =>
+      _allTournaments().where((t) => t.trash != null).toList()
+        ..sort((a, b) => b.trash!.movedAt.compareTo(a.trash!.movedAt)));
+
 
   @override
   Stream<TournamentRecord?> watchTournament(String id) => _watch(() {
@@ -103,7 +110,7 @@ class LocalRepository implements AppRepository {
   Future<TournamentRecord?> findTournamentByInvite(String code) async {
     final c = code.trim().toUpperCase();
     for (final m in _tournaments.values) {
-      if ((m['inviteCode'] as String).toUpperCase() == c) {
+      if (m['trash'] == null && (m['inviteCode'] as String).toUpperCase() == c) {
         return TournamentRecord.fromJson(_copy(m));
       }
     }
@@ -113,6 +120,7 @@ class LocalRepository implements AppRepository {
   @override
   Future<TournamentRecord> saveTournament(TournamentRecord t) async {
     final existing = _tournaments[t.id];
+    if (existing?['trash'] != null) throw StateError('Dieses Turnier liegt im Papierkorb.');
     if (existing != null && (existing['version'] as num).toInt() != t.version) {
       throw VersionConflict('Das Turnier wurde zwischenzeitlich geändert.');
     }
@@ -127,7 +135,7 @@ class LocalRepository implements AppRepository {
     final t = tournamentId == null
         ? await findTournamentByInvite(code)
         : await watchTournament(tournamentId).first;
-    if (t == null || t.inviteCode != code.trim().toUpperCase()) return null;
+    if (t == null || t.trash != null || t.inviteCode != code.trim().toUpperCase()) return null;
     if (!t.isPublic) {
       if (user.role == Role.spectator) throw PermissionDenied('Für private Turniere ist ein Konto nötig.');
       if (await memberRole(t.id, user.uid) == null) {
@@ -147,6 +155,9 @@ class LocalRepository implements AppRepository {
     List<MatchRecord> update = const [],
     required AuditEntry audit,
   }) async {
+    if (_tournaments[t.id]?['trash'] != null && (create.isNotEmpty || update.isNotEmpty)) {
+      throw StateError('Dieses Turnier liegt im Papierkorb.');
+    }
     if (_tournaments[t.id]?['version'] != t.version ||
         create.any((m) => _matches.containsKey(m.id)) ||
         update.any((m) => _matches[m.id]?['version'] != m.version)) {
@@ -193,7 +204,7 @@ class LocalRepository implements AppRepository {
 
   List<MatchRecord> _matchList({String? tournamentId, bool liveOnly = false}) {
     var l = _matches.values
-        .where((m) => m['status'] != MatchStatus.voided.name)
+        .where((m) => m['status'] != MatchStatus.voided.name && _matchVisible(m))
         .map((m) => MatchRecord.fromJson(_copy(m))).toList();
     if (tournamentId != null) l = l.where((m) => m.tournamentId == tournamentId).toList();
     if (liveOnly) {
@@ -207,14 +218,21 @@ class LocalRepository implements AppRepository {
   Stream<List<MatchRecord>> watchMatches({String? tournamentId, bool liveOnly = false}) =>
       _watch(() => _matchList(tournamentId: tournamentId, liveOnly: liveOnly));
 
+  bool _matchVisible(Map<String, dynamic> match) {
+    final tournamentId = match['tournamentId'];
+    return tournamentId == null ||
+        (_tournaments.containsKey(tournamentId) && _tournaments[tournamentId]!['trash'] == null);
+  }
+
   @override
   Stream<MatchRecord?> watchMatch(String id) => _watch(() {
         final m = _matches[id];
-        return m == null ? null : MatchRecord.fromJson(_copy(m));
+        return m == null || !_matchVisible(m) ? null : MatchRecord.fromJson(_copy(m));
       });
 
   @override
   Future<MatchRecord> createMatch(MatchRecord m) async {
+    if (!_matchVisible(m.toJson())) throw StateError('Turnier ist nicht verfügbar.');
     if (_matches.containsKey(m.id)) throw StateError('Begegnung existiert bereits');
     _matches[m.id] = _copy(m.toJson());
     _changed();
@@ -228,7 +246,7 @@ class LocalRepository implements AppRepository {
     int? expectedVersion,
   }) async {
     final raw = _matches[id];
-    if (raw == null) throw StateError('Begegnung $id nicht gefunden');
+    if (raw == null || !_matchVisible(raw)) throw StateError('Begegnung $id nicht gefunden');
     final current = MatchRecord.fromJson(_copy(raw));
     if (expectedVersion != null && expectedVersion != current.version) {
       throw VersionConflict();
