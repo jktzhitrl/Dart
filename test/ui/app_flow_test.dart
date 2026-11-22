@@ -253,6 +253,32 @@ void main() {
     expect(find.byKey(const Key('confirmResult')), findsNothing);
   });
 
+  testWidgets('Admin verschiebt Turnier in den Papierkorb und stellt es wieder her', (tester) async {
+    final (services, repo) = await startApp(tester);
+    await login(tester, 'Alice');
+    final admin = (await tester.runAsync(() => repo.getUser('demo-alice')))!;
+    final tournament = (await tester.runAsync(() => services.tournaments.create(
+      admin, name: 'Papierkorb-Test', format: TournamentFormat.roundRobin,
+      gameType: GameType.x501, rules: const X01Rules(),
+    )))!;
+    await tester.tap(find.text('Turniere'));
+    await settle(tester);
+    await tester.tap(find.text(tournament.name));
+    await settle(tester);
+    await tester.tap(find.byTooltip('Turnier in den Papierkorb'));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('confirmTournamentTrash')));
+    await settle(tester);
+    expect(find.text(tournament.name), findsNothing);
+    await tester.tap(find.byTooltip('Turnier-Papierkorb'));
+    await settle(tester);
+    expect(find.text(tournament.name), findsOneWidget);
+    await tester.tap(find.byKey(Key('restore-${tournament.id}')));
+    await settle(tester);
+    expect(find.text('Der Papierkorb ist leer.'), findsOneWidget);
+    expect((await tester.runAsync(() => repo.watchTournaments().first))!.single.isPublic, isTrue);
+  });
+
   testWidgets('Einladungscode öffnet das Turnier; Teilnahme erfolgt separat', (tester) async {
     final (services, repo) = await startApp(tester);
     await login(tester, 'Alice');

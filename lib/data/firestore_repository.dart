@@ -70,7 +70,22 @@ class FirestoreRepository implements AppRepository {
                   .map((t) => t == null ? <TournamentRecord>[] : [t]),
             ]).map((lists) => {for (final t in lists.expand((l) => l)) t.id: t}.values.toList()));
           });
-    return visible.map((ts) => ts..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+    return visible.map((ts) => ts.where((t) => t.trash == null).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+  }
+
+  @override
+  Stream<List<TournamentRecord>> watchTrash() {
+    final user = auth.currentUser;
+    if (user == null || user.isAnonymous) return Stream.value(const []);
+    return _isAdmin(user.uid).switchMap((admin) => admin
+        ? _tournaments.snapshots(includeMetadataChanges: true)
+            .where((snapshot) => !snapshot.metadata.isFromCache)
+            .map((snapshot) => snapshot.docs
+                .map((doc) => TournamentRecord.fromJson(doc.data()))
+                .where((t) => t.trash != null).toList()
+              ..sort((a, b) => b.trash!.movedAt.compareTo(a.trash!.movedAt)))
+        : Stream.value(const <TournamentRecord>[]));
   }
 
   @override
@@ -108,7 +123,7 @@ class FirestoreRepository implements AppRepository {
     final tournamentRef = _tournaments.doc(tournamentId);
     try {
       final t = await tournamentRef.get(const GetOptions(source: Source.server));
-      return t.exists ? tournamentId : null;
+      return t.exists && t.data()?['trash'] == null ? tournamentId : null;
     } on FirebaseException catch (e) {
       if (e.code != 'permission-denied') rethrow;
     }
@@ -211,32 +226,58 @@ class FirestoreRepository implements AppRepository {
           ]);
     }
 
-    final scope = tournamentId == null
-        ? _matches
-        : _matches.where('tournamentId', isEqualTo: tournamentId);
-    final public = read(scope.where('isPublic', isEqualTo: true), public: true);
     final user = auth.currentUser;
-    final visible = user == null || user.isAnonymous
-        ? public
-        : _isAdmin(user.uid).switchMap((admin) {
-            if (admin) return read(scope);
-            return _membershipIds(user.uid).switchMap((ids) {
-              if (tournamentId != null) return ids.contains(tournamentId) ? read(scope) : public;
-              return Rx.combineLatestList([
-                public,
-                read(_matches.where('scorerUid', isEqualTo: user.uid)
-                    .where('tournamentId', isNull: true)),
-                for (final id in ids) read(_matches.where('tournamentId', isEqualTo: id)),
-              ]).map((lists) => {for (final m in lists.expand((l) => l)) m.id: m}.values.toList());
-            });
-          });
-    return visible.map((ms) => ms..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)));
+    final account = user != null && !user.isAnonymous;
+
+    Stream<List<MatchRecord>> atTournament(String id, {required bool member}) {
+      final scope = _matches.where('tournamentId', isEqualTo: id);
+      final query = member ? scope : scope.where('isPublic', isEqualTo: true);
+      return read(query).onErrorResume((error, stack) {
+        if (error is FirebaseException && error.code == 'permission-denied') {
+          // Visibility may change just before the tournament listener updates.
+          return Stream.value(const <MatchRecord>[]);
+        }
+        return Stream.error(error, stack);
+      });
+    }
+
+    Stream<List<MatchRecord>> nonAdmin() {
+      final memberships = account ? _membershipIds(user.uid) : Stream.value(const <String>[]);
+      final tournaments = watchTournaments()
+          .map((list) => list.map((t) => t.id).toList()..sort())
+          .distinct((a, b) => a.join('/') == b.join('/'));
+      return Rx.combineLatest2(tournaments, memberships, (ids, memberIds) => (ids, memberIds))
+          .switchMap((data) {
+        final (ids, memberIds) = data;
+        if (tournamentId != null) {
+          return ids.contains(tournamentId)
+              ? atTournament(tournamentId, member: memberIds.contains(tournamentId))
+              : Stream.value(const <MatchRecord>[]);
+        }
+        final standalone = _matches.where('tournamentId', isNull: true);
+        return Rx.combineLatestList([
+          read(standalone.where('isPublic', isEqualTo: true)),
+          if (account) read(standalone.where('scorerUid', isEqualTo: user.uid)),
+          for (final id in ids) atTournament(id, member: memberIds.contains(id)),
+        ]).map((lists) => {for (final m in lists.expand((l) => l)) m.id: m}.values.toList());
+      });
+    }
+
+    final visible = !account ? nonAdmin() : _isAdmin(user.uid).switchMap((admin) {
+      if (!admin) return nonAdmin();
+      final scope = tournamentId == null ? _matches : _matches.where('tournamentId', isEqualTo: tournamentId);
+      return Rx.combineLatest2(watchTournaments(), read(scope), (tournaments, matches) {
+        final ids = tournaments.map((t) => t.id).toSet();
+        return matches.where((m) => m.tournamentId == null || ids.contains(m.tournamentId)).toList();
+      });
+    });
+    return visible.map((ms) => [...ms]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt)));
   }
 
   @override
   Stream<MatchRecord?> watchMatch(String id) => _matches.doc(id)
       .snapshots(includeMetadataChanges: true)
-      .where((d) => !d.metadata.isFromCache || d.data()?['isPublic'] == true)
+      .where((d) => !d.metadata.isFromCache || (d.data()?['isPublic'] == true && d.data()?['tournamentId'] == null))
       .map((d) => d.exists ? MatchRecord.fromJson(d.data()!) : null);
 
   @override

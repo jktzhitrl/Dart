@@ -25,6 +25,7 @@ abstract class AppRepository {
 
   // Turniere
   Stream<List<TournamentRecord>> watchTournaments();
+  Stream<List<TournamentRecord>> watchTrash();
   Stream<TournamentRecord?> watchTournament(String id);
   Future<TournamentRecord?> findTournamentByInvite(String code);
 

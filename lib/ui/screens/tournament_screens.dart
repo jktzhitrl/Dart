@@ -79,6 +79,13 @@ class TournamentListScreen extends StatelessWidget {
           return ListView(padding: const EdgeInsets.all(16), children: [
             Row(children: [
               Expanded(child: Text('Turniere', style: Theme.of(context).textTheme.headlineSmall)),
+              if (user.role == Role.admin)
+                IconButton(
+                  tooltip: 'Turnier-Papierkorb',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => Navigator.push(context,
+                      MaterialPageRoute<void>(builder: (_) => const _TournamentTrashScreen())),
+                ),
               OutlinedButton.icon(
                 key: const Key('joinByCode'),
                 onPressed: () => showJoinDialog(context),
@@ -113,6 +120,65 @@ class TournamentListScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TournamentTrashScreen extends StatefulWidget {
+  const _TournamentTrashScreen();
+
+  @override
+  State<_TournamentTrashScreen> createState() => _TournamentTrashScreenState();
+}
+
+class _TournamentTrashScreenState extends State<_TournamentTrashScreen> {
+  late final _trash = context.read<AppRepository>().watchTrash();
+  final _busy = <String>{};
+
+  Future<void> _restore(TournamentRecord tournament) async {
+    if (!_busy.add(tournament.id)) return;
+    setState(() {});
+    final service = context.read<TournamentService>();
+    final user = context.read<AppUser>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await service.restoreTournament(user, tournament);
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('„${tournament.name}“ wiederhergestellt.')));
+    } catch (error) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _busy.remove(tournament.id));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Turnier-Papierkorb')),
+    body: StreamBuilder<List<TournamentRecord>>(
+      stream: _trash,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return const _Hint('Der Papierkorb konnte nicht geladen werden.');
+        final tournaments = snapshot.data;
+        if (tournaments == null) return const Center(child: CircularProgressIndicator());
+        if (tournaments.isEmpty) return const _Hint('Der Papierkorb ist leer.');
+        final dates = MaterialLocalizations.of(context);
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            for (final tournament in tournaments)
+              Card(child: ListTile(
+                title: Text(tournament.name),
+                subtitle: Text('Im Papierkorb seit ${dates.formatShortDate(tournament.trash!.movedAt.toLocal())}'),
+                trailing: TextButton.icon(
+                  key: Key('restore-${tournament.id}'),
+                  icon: const Icon(Icons.restore),
+                  label: const Text('Wiederherstellen'),
+                  onPressed: _busy.contains(tournament.id) ? null : () => _restore(tournament),
+                ),
+              )),
+          ],
+        );
+      },
+    ),
+  );
 }
 
 Future<void> openTournamentLink(BuildContext context, {String? id, String? code}) async {
@@ -305,6 +371,41 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
     }
   }
 
+  bool _movingToTrash = false;
+
+  Future<void> _moveToTrash(TournamentRecord tournament) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Turnier in den Papierkorb verschieben?'),
+        content: Text('„${tournament.name}“ verschwindet aus den aktiven Listen. '
+            'Spiele und Ergebnisse werden beim Wiederherstellen wieder angezeigt.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+          FilledButton(
+            key: const Key('confirmTournamentTrash'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('In den Papierkorb'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || _movingToTrash) return;
+    setState(() => _movingToTrash = true);
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await context.read<TournamentService>().moveToTrash(context.read<AppUser>(), tournament);
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('„${tournament.name}“ liegt im Papierkorb.')));
+      if (nav.canPop()) nav.pop();
+    } catch (error) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('$error')));
+    } finally {
+      if (mounted) setState(() => _movingToTrash = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<TournamentRecord?>(
@@ -323,6 +424,9 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
           );
         }
         if (t == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        if (t.trash != null) {
+          return Scaffold(appBar: AppBar(), body: const _Hint('Dieses Turnier liegt im Papierkorb.'));
+        }
         final showDraw = t.plan != null && (t.published || can(_role, Permission.runDraw));
         return DefaultTabController(
           length: 4,
@@ -332,6 +436,12 @@ class _TournamentDetailScreenState extends State<TournamentDetailScreen> {
               actions: [
                 if (widget.onSignIn != null)
                   TextButton(onPressed: widget.onSignIn, child: const Text('Anmelden')),
+                if (context.watch<AppUser>().role == Role.admin)
+                  IconButton(
+                    tooltip: 'Turnier in den Papierkorb',
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: _movingToTrash ? null : () => _moveToTrash(t),
+                  ),
                 if (t.status == TournamentStatus.finished && t.plan?.isComplete == true)
                   TournamentExportButton(tournament: t),
                 if (t.isPublic || can(_role, Permission.runDraw)) IconButton(

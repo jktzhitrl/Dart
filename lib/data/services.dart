@@ -91,7 +91,30 @@ class TournamentService {
     return saved;
   }
 
+  Future<void> moveToTrash(AppUser by, TournamentRecord tournament) async {
+    _require(by.role, Permission.manageRoles);
+    if (tournament.trash != null) return;
+    await repo.commitTournamentMatches(
+      tournament.copyWith(
+        isPublic: false,
+        trash: TournamentTrash(DateTime.now().toUtc(), wasPublic: tournament.isPublic),
+      ),
+      audit: _auditEntry(by, 'tournament.trash', tournamentId: tournament.id),
+    );
+  }
+
+  Future<void> restoreTournament(AppUser by, TournamentRecord tournament) async {
+    _require(by.role, Permission.manageRoles);
+    final trash = tournament.trash;
+    if (trash == null) return;
+    await repo.commitTournamentMatches(
+      tournament.copyWith(isPublic: trash.wasPublic, restore: true),
+      audit: _auditEntry(by, 'tournament.restore', tournamentId: tournament.id),
+    );
+  }
+
   Future<Role> roleIn(AppUser user, TournamentRecord t) async {
+    if (t.trash != null) throw StateError('Dieses Turnier liegt im Papierkorb.');
     final inT = await repo.memberRole(t.id, user.uid);
     return effectiveRole(user.role, inT);
   }
@@ -204,7 +227,7 @@ class TournamentService {
     final role = await roleIn(by, t);
     _require(role, Permission.startMatch);
     final fresh = await repo.watchTournament(t.id).first;
-    if (fresh == null || !fresh.published || fresh.plan == null) {
+    if (fresh == null || fresh.trash != null || !fresh.published || fresh.plan == null) {
       throw StateError('Die Auslosung ist noch nicht veröffentlicht.');
     }
     t = fresh;

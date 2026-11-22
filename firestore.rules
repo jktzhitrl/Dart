@@ -37,6 +37,15 @@ service cloud.firestore {
     function tournament(tid) {
       return get(/databases/$(database)/documents/tournaments/$(tid)).data;
     }
+    function activeTournament(tid) {
+      return tournament(tid).get('trash', null) == null;
+    }
+    function canReadTournamentMatch(game) {
+      return activeTournament(game.tournamentId)
+        && (isMember(game.tournamentId)
+          || (game.isPublic == true && tournament(game.tournamentId).isPublic == true));
+    }
+
     function devicePath(deviceUid) {
       return /databases/$(database)/documents/board_devices/$(deviceUid);
     }
@@ -140,9 +149,26 @@ service cloud.firestore {
       // Nur Admins legen Turniere an; Start immer mit version 1.
       allow create: if isAdmin()
         && request.resource.data.createdBy == uid()
-        && request.resource.data.version == 1;
+        && request.resource.data.version == 1
+        && !request.resource.data.keys().hasAny(['trash']);
 
-      allow update: if signedIn() && versionBumped()
+      // Moving to the trash switches off public discovery. Restore the original
+      // visibility and leave the complete tournament data untouched.
+      allow update: if isAdmin() && versionBumped()
+        && onlyChanges(['trash', 'isPublic', 'version'])
+        && (
+          (resource.data.get('trash', null) == null
+            && request.resource.data.trash.keys().hasOnly(['movedAt', 'wasPublic'])
+            && request.resource.data.trash.movedAt is string
+            && request.resource.data.trash.wasPublic == resource.data.isPublic
+            && request.resource.data.isPublic == false)
+          || (resource.data.get('trash', null) != null
+            && !request.resource.data.keys().hasAny(['trash'])
+            && request.resource.data.isPublic == resource.data.trash.wasPublic)
+        );
+
+      allow update: if signedIn() && versionBumped() && activeTournament(tid)
+        && request.resource.data.get('trash', null) == null
         && unchanged(['createdBy', 'inviteCode', 'format', 'gameType', 'createdAt', 'id', 'isPublic'])
         && (
           // Turnierleitung: alles
@@ -171,7 +197,7 @@ service cloud.firestore {
         allow get: if isDirector(tid)
           || (isTablet() && resource.data.deviceUid == uid() && tabletAt(tid, boardId));
         allow list: if isDirector(tid);
-        allow create, update: if isDirector(tid) && validLocation()
+        allow create, update: if isDirector(tid) && activeTournament(tid) && validLocation()
           && (resource == null || resource.data.deviceUid == null)
           && request.resource.data.keys().hasOnly(
               ['tournamentId', 'boardId', 'boardIndex', 'deviceUid', 'code', 'expiresAt'])
@@ -179,7 +205,7 @@ service cloud.firestore {
           && request.resource.data.code is string && request.resource.data.code.size() == 20
           && request.resource.data.expiresAt > request.time
           && request.resource.data.expiresAt < request.time + duration.value(12, 'm');
-        allow update: if isTablet() && resource.data.deviceUid == null
+        allow update: if isTablet() && activeTournament(tid) && resource.data.deviceUid == null
           && resource.data.expiresAt > request.time
           && request.resource.data.deviceUid == uid()
           && request.resource.data.proof == resource.data.code
@@ -195,7 +221,7 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read: if signedIn() && (isAdmin() || isMember(tid) || memberId == uid());
         // Leitung vergibt Schreiber/Spieler; nur Admin vergibt Leitung. Selbst: nur 'player'.
-        allow create, update: if hasAccount() && request.resource.data.uid == memberId && (
+        allow create, update: if hasAccount() && activeTournament(tid) && request.resource.data.uid == memberId && (
           isAdmin()
           || (isDirector(tid) && request.resource.data.role in ['player', 'scorer'])
           || (memberId == uid() && request.resource.data.role == 'player'
@@ -237,18 +263,26 @@ service cloud.firestore {
 
     // ------------------------------------------------------------------ matches
     match /matches/{mid} {
-      allow read: if resource.data.isPublic == true || isAdmin()
-        || (resource.data.tournamentId != null && isMember(resource.data.tournamentId))
-        || (hasAccount() && resource.data.tournamentId == null && resource.data.scorerUid == uid());
+      function readsMatch(game) {
+        return game.tournamentId == null
+          ? (game.isPublic == true || (hasAccount() && game.scorerUid == uid()))
+          : canReadTournamentMatch(game);
+      }
+
+      allow list: if isAdmin() || readsMatch(resource.data);
+      allow get: if readsMatch(resource.data)
+        || (isAdmin() && (resource.data.tournamentId == null || activeTournament(resource.data.tournamentId)));
 
       allow get: if isTablet() && resource.data.tournamentId != null
         && resource.data.boardId != null
         && tabletAt(resource.data.tournamentId, resource.data.boardId)
+        && activeTournament(resource.data.tournamentId)
         && tabletScores(mid, resource.data);
 
       allow update: if isTablet() && resource.data.tournamentId != null
         && resource.data.boardId != null
         && tabletAt(resource.data.tournamentId, resource.data.boardId)
+        && activeTournament(resource.data.tournamentId)
         && tabletScores(mid, resource.data)
         && versionBumped() && x01Plausible()
         && resource.data.status in ['live', 'paused', 'awaitingConfirmation']
@@ -263,6 +297,7 @@ service cloud.firestore {
         request.resource.data.tournamentId == null
           ? request.resource.data.scorerUid == uid()
           : isStaff(request.resource.data.tournamentId)
+            && activeTournament(request.resource.data.tournamentId)
             && request.resource.data.isPublic == tournament(request.resource.data.tournamentId).isPublic);
 
       allow update: if hasAccount() && versionBumped()
@@ -273,7 +308,7 @@ service cloud.firestore {
         && (
           resource.data.tournamentId == null
             ? (resource.data.scorerUid == uid() || isAdmin())
-            : isStaff(resource.data.tournamentId))
+            : isStaff(resource.data.tournamentId) && activeTournament(resource.data.tournamentId))
         // Offizielle Änderungen und Annullierungen bleiben der Turnierleitung vorbehalten.
         && ((request.resource.data.get('correction', null) == resource.data.get('correction', null)
              && request.resource.data.status != 'voided'

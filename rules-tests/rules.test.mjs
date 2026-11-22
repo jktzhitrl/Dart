@@ -8,7 +8,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc, addDoc, collection, collectionGroup, deleteDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, addDoc, collection, collectionGroup, deleteDoc, deleteField, getDocs, query, where, writeBatch } from 'firebase/firestore';
 
 let env;
 
@@ -165,6 +165,44 @@ describe('Turniere', () => {
   });
 });
 
+describe('Turnier-Papierkorb', () => {
+  it('nur Admins verschieben; Turnierlinks und Spiele werden beim Wiederherstellen erneut sichtbar', async () => {
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'matches/public'),
+      match({ id: 'public', tournamentId: 't2', isPublic: true })));
+    const admin = db('admin');
+    const t = doc(admin, 'tournaments/t2');
+    const trash = { movedAt: '2026-11-22T12:00:00Z', wasPublic: true };
+    const hidden = { trash, isPublic: false, version: 2 };
+    const publicMatches = query(collection(anon(), 'matches'),
+      where('tournamentId', '==', 't2'), where('isPublic', '==', true));
+    await assertSucceeds(getDocs(publicMatches));
+    await assertFails(updateDoc(doc(db('other'), 'tournaments/t2'), hidden));
+    await assertFails(updateDoc(t, { ...hidden, trash: { ...trash, wasPublic: false } }));
+    await assertFails(updateDoc(t, { ...hidden, name: 'Geändert' }));
+    await assertSucceeds(updateDoc(t, hidden));
+    await assertFails(getDoc(doc(anon(), 'tournaments/t2')));
+    await assertFails(getDoc(doc(anon(), 'matches/public')));
+    await assertFails(getDocs(publicMatches));
+    await assertFails(getDoc(doc(db('other'), 'matches/public')));
+    await assertFails(updateDoc(doc(admin, 'matches/public'), { draft: [320], version: 2 }));
+    await assertFails(updateDoc(t, { trash: deleteField(), isPublic: false, version: 3 }));
+    await assertSucceeds(updateDoc(t, { trash: deleteField(), isPublic: true, version: 3 }));
+    await assertSucceeds(getDoc(doc(anon(), 'tournaments/t2')));
+    const visible = await assertSucceeds(getDocs(publicMatches));
+    assert.deepEqual(visible.docs.map((entry) => entry.id), ['public']);
+  });
+
+  it('private Turniere bleiben bei der Wiederherstellung privat', async () => {
+    const t = doc(db('admin'), 'tournaments/t1');
+    const trash = { movedAt: '2026-11-22T12:00:00Z', wasPublic: false };
+    await assertSucceeds(updateDoc(t, { trash, version: 2 }));
+    await assertFails(updateDoc(t, { trash: deleteField(), isPublic: true, version: 3 }));
+    await assertSucceeds(updateDoc(t, { trash: deleteField(), version: 3 }));
+    await assertFails(getDoc(doc(anon(), 'tournaments/t1')));
+    await assertSucceeds(getDoc(doc(db('dir'), 'matches/m1')));
+  });
+});
+
 describe('Turnier-Mitglieder', () => {
   it('Spieler kann sich nicht zum Schreiber machen', async () => {
     const player = { uid: 'pl', name: 'pl', role: 'player' };
@@ -271,7 +309,7 @@ describe('Begegnungen und gleichzeitige Eingaben', () => {
       { cricket: { cutThroat: false, darts: [320] }, version: 2 }));
   });
   it('Lesen öffentlicher Spiele ohne Anmeldung', async () => {
-    await env.withSecurityRulesDisabled((c) => updateDoc(doc(c.firestore(), 'matches/m1'), { isPublic: true }));
+    await env.withSecurityRulesDisabled((c) => updateDoc(doc(c.firestore(), 'matches/m1'), { isPublic: true, tournamentId: 't2' }));
     await assertSucceeds(getDoc(doc(anon(), 'matches/m1')));
   });
 });
@@ -349,6 +387,14 @@ describe('Board-Tablet', () => {
     await assertSucceeds(claim(f, 'pad', code));
     await assertSucceeds(getDoc(doc(f, stationPath)));
     await assertSucceeds(getDoc(doc(f, 'tournaments/t1')));
+    const t = doc(db('admin'), 'tournaments/t1');
+    await assertSucceeds(updateDoc(t, {
+      trash: { movedAt: '2026-11-22T12:00:00Z', wasPublic: false }, version: 2,
+    }));
+    await assertSucceeds(getDoc(doc(f, 'tournaments/t1')));
+    await assertFails(updateDoc(doc(f, 'matches/m1'), { draft: [320], version: 2 }));
+    await assertSucceeds(updateDoc(t, { trash: deleteField(), version: 3 }));
+    await assertSucceeds(updateDoc(doc(f, 'matches/m1'), { draft: [320], version: 2 }));
     await assertFails(claim(tablet('pad2'), 'pad2', code));
     await assertFails(setDoc(doc(db('dir'), stationPath), station()));
   });
