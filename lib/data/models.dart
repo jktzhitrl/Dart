@@ -117,6 +117,8 @@ class TournamentRecord {
   final GameType gameType;
   final X01Rules rules;
   final bool isPublic;
+  final bool isDuo;
+  final List<Participant> duoTeams;
   final TournamentStatus status;
   final TournamentTrash? trash;
   final String inviteCode;
@@ -146,6 +148,8 @@ class TournamentRecord {
     required this.createdBy,
     required this.createdAt,
     this.registrations = const [],
+    this.isDuo = false,
+    this.duoTeams = const [],
     this.plan,
     this.trash,
     this.published = false,
@@ -159,6 +163,7 @@ class TournamentRecord {
     bool? isPublic,
     TournamentStatus? status,
     List<Participant>? registrations,
+    List<Participant>? duoTeams,
     TournamentPlan? plan,
     bool clearPlan = false,
     bool? published,
@@ -179,6 +184,8 @@ class TournamentRecord {
         createdBy: createdBy,
         createdAt: createdAt,
         registrations: registrations ?? this.registrations,
+        isDuo: isDuo,
+        duoTeams: duoTeams ?? this.duoTeams,
         plan: clearPlan ? null : (plan ?? this.plan),
         published: published ?? this.published,
         boards: boards ?? this.boards,
@@ -193,6 +200,8 @@ class TournamentRecord {
         'gameType': gameType.name,
         'rules': rules.toJson(),
         'isPublic': isPublic,
+        if (isDuo) 'isDuo': true,
+        if (duoTeams.isNotEmpty) 'duoTeams': duoTeams.map((p) => p.toJson()).toList(),
         if (trash != null) 'trash': trash!.toJson(),
         'status': status.name,
         'inviteCode': inviteCode,
@@ -212,6 +221,11 @@ class TournamentRecord {
         gameType: GameType.values.byName(j['gameType'] as String),
         rules: X01Rules.fromJson(Map<String, dynamic>.from(j['rules'] as Map)),
         isPublic: j['isPublic'] as bool? ?? false,
+        isDuo: j['isDuo'] as bool? ?? false,
+        duoTeams: [
+          for (final team in j['duoTeams'] as List? ?? const [])
+            Participant.fromJson(Map<String, dynamic>.from(team as Map)),
+        ],
         trash: j['trash'] == null ? null : TournamentTrash.fromJson(
           Map<String, dynamic>.from(j['trash'] as Map),
         ),
@@ -240,10 +254,26 @@ enum MatchStatus { scheduled, live, paused, awaitingConfirmation, confirmed, voi
 class MatchPlayer {
   final String id;
   final String name;
-  const MatchPlayer(this.id, this.name);
-  Map<String, dynamic> toJson() => {'id': id, 'name': name};
-  factory MatchPlayer.fromJson(Map<String, dynamic> j) =>
-      MatchPlayer(j['id'] as String, j['name'] as String);
+  final List<Participant> members;
+
+  const MatchPlayer(this.id, this.name, {this.members = const []});
+
+  bool represents(String playerId) => id == playerId || members.any((p) => p.id == playerId);
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    if (members.isNotEmpty) 'members': members.map((p) => p.toJson()).toList(),
+  };
+
+  factory MatchPlayer.fromJson(Map<String, dynamic> j) => MatchPlayer(
+    j['id'] as String,
+    j['name'] as String,
+    members: [
+      for (final member in j['members'] as List? ?? const [])
+        Participant.fromJson(Map<String, dynamic>.from(member as Map)),
+    ],
+  );
 }
 
 /// Official legs score in the order of MatchRecord.players.
@@ -309,6 +339,18 @@ class MatchRecord {
 
   /// Index des Siegers, falls entschieden.
   int? get winnerIndex => correction?.winnerIndex ?? x01?.state.winnerIndex ?? cricket?.state.winnerIndex ?? clock?.state.winnerIndex;
+  /// One team owns the score. The team members alternate on every visit,
+  /// including after busts and across legs. Undo also restores the thrower.
+  Participant? get currentDuoThrower {
+    final game = x01;
+    if (game == null || game.isFinished) return null;
+    final side = game.state.currentPlayer;
+    final members = players[side].members;
+    if (members.isEmpty) return null;
+    final teamVisits = game.visits.where((visit) => visit.playerIndex == side).length;
+    return members[teamVisits % members.length];
+  }
+
   bool get isFinished => winnerIndex != null;
   String? get winnerId => winnerIndex == null ? null : players[winnerIndex!].id;
 

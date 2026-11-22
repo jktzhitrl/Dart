@@ -35,6 +35,58 @@ void main() {
     return t;
   }
 
+  test('Duo-Auslosung, gemeinsame Punkte und Gruppenphase bis zum Finale', () async {
+    var t = await svc.create(admin, name: 'Vereins-Duo', isDuo: true,
+      format: TournamentFormat.groupsKnockout, gameType: GameType.x301,
+      rules: const X01Rules(format: MatchFormat(legsToWinSet: 1)));
+    for (var i = 1; i <= 5; i++) {
+      t = await svc.addParticipant(admin, t, Participant(id: 'p$i', name: 'Spieler $i'));
+    }
+    await expectLater(svc.drawDuoTeams(admin, t), throwsStateError);
+    t = await svc.removeParticipant(admin, t, 'p5');
+    await expectLater(svc.drawDuoTeams(admin, t), throwsStateError);
+    for (var i = 1; i <= 4; i++) {
+      t = await svc.setLotNumber(admin, t, 'p$i', i * 3);
+    }
+    await expectLater(svc.setLotNumber(admin, t, 'p2', 3), throwsArgumentError);
+    final rolled = [...t.registrations]..shuffle(Random(11));
+    t = await svc.drawDuoTeams(admin, t, rng: Random(11));
+    expect(t.plan, isNull);
+    expect(t.duoTeams.map((d) => d.members.map((p) => p.id).toList()).toList(), [
+      [rolled[0].id, rolled[1].id], [rolled[2].id, rolled[3].id],
+    ]);
+    await expectLater(svc.setLotNumber(admin, t, 'p1', 50), throwsStateError);
+    t = await svc.draw(admin, t, rng: Random(1));
+    final groupGame = t.plan!.playable.single;
+    expect(() => svc.startMatch(admin, t, groupGame), throwsStateError);
+    t = await svc.publish(admin, t);
+
+    final first = await svc.startMatch(admin, t, groupGame, boardId: 'b1');
+    final a = first.players[0].members;
+    final b = first.players[1].members;
+    expect(first.currentDuoThrower?.id, a[0].id);
+    expect(t.plan!.entryForPlayer(a[1].id), first.players[0].id);
+    var leg = await repo.updateMatch(first.id, (m) => m.copyWith(x01: m.x01!.submitTotal(180)));
+    expect(leg.currentDuoThrower?.id, b[0].id);
+    expect(leg.x01!.state.remaining, [121, 301]);
+    leg = await repo.updateMatch(first.id, (m) => m.copyWith(x01: m.x01!.submitTotal(60)));
+    expect(leg.currentDuoThrower?.id, a[1].id);
+    expect(leg.copyWith(x01: leg.x01!.undo()).currentDuoThrower?.id, b[0].id);
+    leg = await repo.updateMatch(first.id, (m) => m.copyWith(x01: m.x01!.submitTotal(121)));
+    expect(leg.winnerId, first.players[0].id);
+    t = (await svc.confirmResult(admin, leg))!;
+    expect(t.plan!.phase, PlanPhase.knockout);
+
+    final finalGame = await svc.startMatch(admin, t, t.plan!.playable.single, boardId: 'b1');
+    final result = await repo.updateMatch(finalGame.id, (m) => m.copyWith(
+      x01: m.x01!.submitTotal(180).submitTotal(0).submitTotal(121),
+    ));
+    t = (await svc.confirmResult(admin, result))!;
+    expect(t.plan!.championId, finalGame.players[0].id);
+    expect(t.status, TournamentStatus.finished);
+    expect(t.plan!.names[t.plan!.championId], finalGame.players[0].name);
+  });
+
   test('nur Admin darf Turniere anlegen', () async {
     expect(
         () => svc.create(player,

@@ -30,10 +30,10 @@ class DashboardScreen extends StatelessWidget {
           final matches = ms.data ?? const <MatchRecord>[];
           final pid = user.playerId;
           final live = matches.where((m) => m.status == MatchStatus.live || m.status == MatchStatus.paused).toList();
-          final mine = pid == null ? const <TournamentRecord>[] : tournaments.where((t) => t.plan?.participants.any((p) => p.id == pid) ?? false).toList();
+          final mine = pid == null ? const <TournamentRecord>[] : tournaments.where((t) => t.plan?.entryForPlayer(pid) != null).toList();
           final myFinished = pid == null
               ? const <MatchRecord>[]
-              : matches.where((m) => m.isFinished && m.players.any((p) => p.id == pid)).toList();
+              : matches.where((m) => m.isFinished && m.players.any((p) => p.represents(pid))).toList();
 
           return ListView(padding: const EdgeInsets.all(16), children: [
             Text('Hallo ${user.displayName}', style: Theme.of(context).textTheme.headlineSmall),
@@ -136,20 +136,22 @@ class _NextMatches extends StatelessWidget {
     for (final t in tournaments) {
       final plan = t.plan;
       if (plan == null || !t.published || plan.isComplete) continue;
-      final next = plan.nextMatchFor(playerId);
+      final entry = plan.entryForPlayer(playerId);
+      if (entry == null) continue;
+      final next = plan.nextMatchFor(entry);
       if (next == null) {
         items.add(Card(
           child: ListTile(
             leading: const Icon(Icons.hourglass_empty),
             title: Text(t.name),
-            subtitle: Text(plan.bracket?.isEliminated(playerId) ?? false
+            subtitle: Text(plan.bracket?.isEliminated(entry) ?? false
                 ? 'Ausgeschieden'
                 : 'Warte auf den nächsten Gegner'),
           ),
         ));
         continue;
       }
-      final opp = next.playerIds.firstWhere((id) => id != playerId);
+      final opp = next.playerIds.firstWhere((id) => id != entry);
       final running = matches.where((m) => m.tournamentId == t.id && m.planMatchId == next.id && m.status != MatchStatus.confirmed).firstOrNull;
       items.add(Card(
         child: ListTile(
@@ -184,21 +186,23 @@ class _Standings extends StatelessWidget {
     for (final t in tournaments) {
       final plan = t.plan;
       if (plan == null || !t.published) continue;
+      final entry = plan.entryForPlayer(playerId);
+      if (entry == null) continue;
       String text;
       final tables = plan.tables();
       if (tables.isNotEmpty) {
-        final tbl = tables.firstWhere((tb) => tb.any((r) => r.playerId == playerId), orElse: () => const []);
-        final row = tbl.where((r) => r.playerId == playerId).firstOrNull;
+        final tbl = tables.firstWhere((tb) => tb.any((r) => r.playerId == entry), orElse: () => const []);
+        final row = tbl.where((r) => r.playerId == entry).firstOrNull;
         text = row == null
             ? 'Platz –'
             : 'Platz ${row.rank} von ${tbl.length} · ${row.points} Pkt · ${row.wins}S/${row.losses}N';
         if (plan.format == TournamentFormat.groupsKnockout && plan.phase == PlanPhase.knockout) {
-          text += (plan.bracket?.isEliminated(playerId) ?? false) ? ' · K.-o.: ausgeschieden' : ' · im K.-o.';
+          text += (plan.bracket?.isEliminated(entry) ?? false) ? ' · K.-o.: ausgeschieden' : ' · im K.-o.';
         }
       } else if (plan.bracket != null) {
-        text = plan.championId == playerId
+        text = plan.championId == entry
             ? '🏆 Turniersieger'
-            : (plan.bracket!.isEliminated(playerId) ? 'Ausgeschieden' : 'Im Turnier');
+            : (plan.bracket!.isEliminated(entry) ? 'Ausgeschieden' : 'Im Turnier');
       } else {
         continue;
       }
@@ -222,8 +226,8 @@ class _ResultTile extends StatelessWidget {
   const _ResultTile({required this.match, required this.playerId});
   @override
   Widget build(BuildContext context) {
-    final won = match.winnerId == playerId;
-    final opp = match.players.where((p) => p.id != playerId).map((p) => p.name).join(', ');
+    final won = match.players.any((p) => p.id == match.winnerId && p.represents(playerId));
+    final opp = match.players.where((p) => !p.represents(playerId)).map((p) => p.name).join(', ');
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Card(

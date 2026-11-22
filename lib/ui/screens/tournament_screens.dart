@@ -259,6 +259,7 @@ class _TournamentCreateScreenState extends State<TournamentCreateScreen> {
   GameType _game = GameType.x501;
   X01Rules _rules = const X01Rules();
   bool _public = true;
+  bool _duo = false;
   int _boards = 2;
   bool _busy = false;
 
@@ -283,6 +284,7 @@ class _TournamentCreateScreenState extends State<TournamentCreateScreen> {
             rules: _rules,
             isPublic: _public,
             boardCount: _boards,
+            isDuo: _duo,
           );
       if (!mounted) return;
       Navigator.pushReplacement(
@@ -301,6 +303,20 @@ class _TournamentCreateScreenState extends State<TournamentCreateScreen> {
       body: ListView(padding: const EdgeInsets.all(16), children: [
         TextField(key: const Key('tournamentName'), controller: _name, decoration: const InputDecoration(labelText: 'Turniername')),
         const SizedBox(height: 12),
+        SwitchListTile(
+          key: const Key('duoMode'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Duo-Turnier'),
+          subtitle: const Text('Zufällige Zweier-Teams mit Gruppenphase und K.-o.'),
+          value: _duo,
+          onChanged: (value) => setState(() {
+            _duo = value;
+            if (value) {
+              _format = TournamentFormat.groupsKnockout;
+              if (!_game.isX01) _game = GameType.x501;
+            }
+          }),
+        ),
         DropdownButtonFormField<TournamentFormat>(
           key: const Key('format'),
           value: _format,
@@ -309,11 +325,12 @@ class _TournamentCreateScreenState extends State<TournamentCreateScreen> {
             for (final f in TournamentFormat.values.where((f) => f != TournamentFormat.friendly))
               DropdownMenuItem(value: f, child: Text(f.label)),
           ],
-          onChanged: (f) => setState(() => _format = f ?? _format),
+          onChanged: _duo ? null : (f) => setState(() => _format = f ?? _format),
         ),
         const SizedBox(height: 16),
         RulesEditor(
           allowTraining: false,
+          x01Only: _duo,
           gameType: _game,
           rules: _rules,
           onGameType: (g) => setState(() => _game = g),
@@ -566,11 +583,11 @@ class _Overview extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(t.format.label, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            Text(t.isDuo ? 'Duo · ${t.format.label}' : t.format.label, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
             Text('${t.gameType.label}${t.gameType.isX01 ? ' · ${t.rules.label.split('·').last.trim()} · ${t.rules.format.label}' : ''}'),
             const SizedBox(height: 4),
-            Text('Status: ${statusLabel(t.status)} · ${t.boards.length} Boards',
+            Text('Status: ${t.status == TournamentStatus.registration && t.duoTeams.isNotEmpty ? 'Duos ausgelost' : statusLabel(t.status)} · ${t.boards.length} Boards',
                 style: const TextStyle(color: AppColors.textDim)),
             if (t.plan?.championId != null) ...[
               const SizedBox(height: 8),
@@ -580,13 +597,13 @@ class _Overview extends StatelessWidget {
         ),
       ),
       const SizedBox(height: 12),
-      if (t.status == TournamentStatus.registration && onSignIn != null)
+      if (t.status == TournamentStatus.registration && t.duoTeams.isEmpty && onSignIn != null)
         FilledButton.icon(
           onPressed: onSignIn,
           icon: const Icon(Icons.how_to_reg),
           label: const Text('Zum Teilnehmen anmelden'),
         ),
-      if (t.status == TournamentStatus.registration && can(role, Permission.joinTournament) && user.playerId != null && !registered)
+      if (t.status == TournamentStatus.registration && t.duoTeams.isEmpty && can(role, Permission.joinTournament) && user.playerId != null && !registered)
         FilledButton.icon(
           key: const Key('registerSelf'),
           icon: const Icon(Icons.how_to_reg),
@@ -620,8 +637,11 @@ class _Participants extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.read<TournamentService>();
     final user = context.read<AppUser>();
-    final manage = can(role, Permission.manageParticipants) && t.status == TournamentStatus.registration;
-    final list = t.status == TournamentStatus.registration ? t.registrations : (t.plan?.participants ?? t.registrations);
+    final manage = can(role, Permission.manageParticipants) &&
+        t.status == TournamentStatus.registration && t.duoTeams.isEmpty;
+    final list = t.isDuo
+        ? t.registrations
+        : t.status == TournamentStatus.registration ? t.registrations : (t.plan?.participants ?? t.registrations);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -644,17 +664,28 @@ class _Participants extends StatelessWidget {
               leading: CircleAvatar(
                   radius: 14,
                   backgroundColor: AppColors.accentDim,
-                  child: Text(p.seed?.toString() ?? '–', style: const TextStyle(fontSize: 12))),
+                  child: Text((t.isDuo ? p.lotNumber : p.seed)?.toString() ?? '–', style: const TextStyle(fontSize: 12))),
               title: Text(p.name),
               trailing: manage
                   ? Row(mainAxisSize: MainAxisSize.min, children: [
                       IconButton(
-                        tooltip: 'Setzplatz',
+                        tooltip: t.isDuo ? 'Losnummer eintragen' : 'Setzplatz',
                         icon: const Icon(Icons.format_list_numbered),
                         onPressed: () async {
-                          final v = await _askSeed(context, p);
-                          if (v == null) return;
-                          await svc.setSeed(user, t, p.id, v == 0 ? null : v);
+                          final value = t.isDuo ? await _askLot(context, p) : await _askSeed(context, p);
+                          if (value == null || !context.mounted) return;
+                          try {
+                            final number = value == 0 ? null : value;
+                            if (t.isDuo) {
+                              await svc.setLotNumber(user, t, p.id, number);
+                            } else {
+                              await svc.setSeed(user, t, p.id, number);
+                            }
+                          } catch (error) {
+                            if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('$error')),
+                            );
+                          }
                         },
                       ),
                       IconButton(
@@ -721,6 +752,11 @@ class _Participants extends StatelessWidget {
     }
   }
 
+  Future<int?> _askLot(BuildContext context, Participant player) => showDialog<int>(
+    context: context,
+    builder: (_) => _LotNumberDialog(player: player),
+  );
+
   Future<int?> _askSeed(BuildContext context, Participant p) {
     return showDialog<int>(
       context: context,
@@ -734,6 +770,56 @@ class _Participants extends StatelessWidget {
       ),
     );
   }
+}
+
+class _LotNumberDialog extends StatefulWidget {
+  final Participant player;
+  const _LotNumberDialog({required this.player});
+
+  @override
+  State<_LotNumberDialog> createState() => _LotNumberDialogState();
+}
+
+class _LotNumberDialogState extends State<_LotNumberDialog> {
+  late final _number = TextEditingController(text: widget.player.lotNumber?.toString());
+  final _form = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _number.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    if (_form.currentState!.validate()) {
+      Navigator.pop(context, int.tryParse(_number.text) ?? 0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('Losnummer für ${widget.player.name}'),
+    content: Form(
+      key: _form,
+      child: TextFormField(
+        key: const Key('lotNumber'),
+        autofocus: true,
+        controller: _number,
+        decoration: const InputDecoration(labelText: 'Gezogene Nummer'),
+        keyboardType: TextInputType.number,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        onFieldSubmitted: (_) => _save(),
+        validator: (text) => text == null || text.isEmpty || (int.tryParse(text) ?? 0) > 0
+            ? null : 'Bitte eine positive Zahl eingeben.',
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+      if (widget.player.lotNumber != null)
+        TextButton(onPressed: () => Navigator.pop(context, 0), child: const Text('Nummer entfernen')),
+      FilledButton(key: const Key('saveLotNumber'), onPressed: _save, child: const Text('Speichern')),
+    ],
+  );
 }
 
 class _DrawControls extends StatelessWidget {
@@ -753,12 +839,39 @@ class _DrawControls extends StatelessWidget {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Auslosung', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          if (plan == null)
+          if (t.isDuo && t.duoTeams.isEmpty)
+            FilledButton.icon(
+              key: const Key('drawDuoTeams'),
+              icon: const Icon(Icons.shuffle),
+              label: const Text('Duos zufällig losen'),
+              onPressed: () => run(() => svc.drawDuoTeams(user, t)),
+            ),
+          if (t.isDuo && t.duoTeams.isNotEmpty && plan == null) ...[
+            const Text('Gezogene Duos'),
+            for (final team in t.duoTeams)
+              ListTile(
+                leading: const Icon(Icons.group),
+                title: Text(team.name),
+                subtitle: Text(team.members.map((p) => 'Los ${p.lotNumber}').join(' und ')),
+                dense: true,
+              ),
+            Wrap(spacing: 8, children: [
+              TextButton(
+                onPressed: () => run(() => svc.drawDuoTeams(user, t)),
+                child: const Text('Duos neu losen'),
+              ),
+              TextButton(
+                onPressed: () => run(() => svc.resetDuoTeams(user, t)),
+                child: const Text('Zurück zur Teilnehmerliste'),
+              ),
+            ]),
+          ],
+          if (plan == null && (!t.isDuo || t.duoTeams.isNotEmpty))
             FilledButton.icon(
               key: const Key('drawButton'),
               icon: const Icon(Icons.shuffle),
-              label: const Text('Auslosen'),
-              onPressed: t.registrations.length < 2
+              label: Text(t.isDuo ? 'Duos bestätigen und Gruppen auslosen' : 'Auslosen'),
+              onPressed: !t.isDuo && t.registrations.length < 2
                   ? null
                   : () async {
                       final opts = await _askOptions(context, t);
@@ -767,8 +880,10 @@ class _DrawControls extends StatelessWidget {
                     },
             ),
           if (plan != null && !t.published) ...[
-            const Text('Entwurf – bitte prüfen. Zwei Spieler antippen, um sie zu tauschen.',
-                style: TextStyle(color: AppColors.warning)),
+            Text(t.isDuo
+                ? 'Entwurf – zwei Duos antippen, um ihre Gruppenplätze zu tauschen.'
+                : 'Entwurf – bitte prüfen. Zwei Spieler antippen, um sie zu tauschen.',
+                style: const TextStyle(color: AppColors.warning)),
             const SizedBox(height: 8),
             _DrawPreview(t: t, plan: plan),
             const SizedBox(height: 8),
@@ -782,7 +897,7 @@ class _DrawControls extends StatelessWidget {
               OutlinedButton.icon(
                 key: const Key('redrawButton'),
                 icon: const Icon(Icons.refresh),
-                label: const Text('Neu auslosen'),
+                label: Text(t.isDuo ? 'Gruppen neu auslosen' : 'Neu auslosen'),
                 onPressed: () => run(() => svc.redraw(user, t)),
               ),
             ]),
@@ -798,7 +913,7 @@ class _DrawControls extends StatelessWidget {
     var groupSize = 4;
     var advance = 2;
     var swissRounds = 0;
-    final n = t.registrations.length;
+    final n = t.isDuo ? t.duoTeams.length : t.registrations.length;
     return showDialog<PlanOptions>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -806,9 +921,9 @@ class _DrawControls extends StatelessWidget {
           title: const Text('Auslosung'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              if (t.format == TournamentFormat.singleElimination ||
+              if (!t.isDuo && (t.format == TournamentFormat.singleElimination ||
                   t.format == TournamentFormat.doubleElimination ||
-                  t.format == TournamentFormat.groupsKnockout)
+                  t.format == TournamentFormat.groupsKnockout))
                 SwitchListTile(
                   title: const Text('Gesetzte Spieler berücksichtigen'),
                   value: useSeeds,
@@ -816,7 +931,7 @@ class _DrawControls extends StatelessWidget {
                 ),
               if (t.format == TournamentFormat.groupsKnockout) ...[
                 ListTile(
-                  title: const Text('Gruppengröße'),
+                  title: Text(t.isDuo ? 'Duos je Gruppe' : 'Gruppengröße'),
                   trailing: DropdownButton<int>(
                     value: groupSize,
                     items: [for (var i = 3; i <= 8; i++) DropdownMenuItem(value: i, child: Text('$i'))],
@@ -863,7 +978,7 @@ class _DrawControls extends StatelessWidget {
                     advancePerGroup: advance,
                     swissRounds: swissRounds == 0 ? null : swissRounds,
                   )),
-              child: const Text('Auslosen'),
+              child: Text(t.isDuo ? 'Gruppen auslosen' : 'Auslosen'),
             ),
           ],
         ),
@@ -1052,13 +1167,13 @@ class _Schedule extends StatelessWidget {
             BracketView(
               bracket: plan.bracket!,
               names: plan.names,
-              highlightPlayerId: user.playerId,
+              highlightPlayerId: plan.entryForPlayer(user.playerId),
               runningMatchIds: running.keys.toSet(),
               onTapMatch: (m) => open(m.id),
             ),
           if (plan.bracket == null || plan.format == TournamentFormat.groupsKnockout) ...[
             if (plan.bracket != null) const Divider(height: 32),
-            _FixtureList(plan: plan, running: running, onTap: canStart || running.isNotEmpty ? open : null, me: user.playerId),
+            _FixtureList(plan: plan, running: running, onTap: canStart || running.isNotEmpty ? open : null, me: plan.entryForPlayer(user.playerId)),
           ],
         ]);
       },
@@ -1180,7 +1295,7 @@ class _Tables extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final plan = t.plan!;
-    final me = context.watch<AppUser>().playerId;
+    final me = plan.entryForPlayer(context.watch<AppUser>().playerId);
     final tables = plan.tables();
     if (tables.isEmpty) {
       return const _Hint('Bei K.-o.-Turnieren gibt es keine Tabelle – siehe Spielplan.');

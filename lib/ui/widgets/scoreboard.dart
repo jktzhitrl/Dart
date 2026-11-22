@@ -126,6 +126,7 @@ class _X01Board extends StatelessWidget {
   Widget build(BuildContext context) {
     final x = match.x01!;
     final s = x.state;
+    final thrower = match.currentDuoThrower;
     final preview = s.isFinished ? null : x.previewDraft(match.draft);
     final cards = <Widget>[
       for (var i = 0; i < match.players.length; i++)
@@ -150,7 +151,7 @@ class _X01Board extends StatelessWidget {
             draft: i == s.currentPlayer && !s.isFinished ? match.draft : const [],
             startedLeg: s.legStarter == i,
             tv: tv,
-            favoriteDouble: favs[match.players[i].id],
+            favoriteDouble: favs[i == s.currentPlayer ? thrower?.id ?? match.players[i].id : match.players[i].id],
             outMode: x.rules.outMode,
             dartsLeft: i == s.currentPlayer && preview != null ? preview.dartsLeft.clamp(1, 3) : 3,
           ),
@@ -160,6 +161,15 @@ class _X01Board extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         _Header(match: match, tv: tv, boardName: boardName),
+        if (thrower != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Am Wurf: ${thrower.name}',
+              key: const Key('duoThrower'),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+          ),
         const SizedBox(height: 8),
         IntrinsicHeight(
           child: Row(

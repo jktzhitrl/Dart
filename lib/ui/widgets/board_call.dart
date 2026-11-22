@@ -42,13 +42,13 @@ class _BoardCallState extends State<BoardCall> {
             if (board == null ||
                 match.status != MatchStatus.live ||
                 match.isFinished ||
-                !match.players.any((p) => p.id == widget.playerId)) {
+                !match.players.any((p) => p.represents(widget.playerId))) {
               continue;
             }
             final key = (match.id, board.id);
             if (_dismissed.contains(key)) continue;
             final opponent = match.players.firstWhere(
-              (p) => p.id != widget.playerId,
+              (p) => !p.represents(widget.playerId),
             );
             void dismiss() => setState(() => _dismissed.add(key));
             final colors = Theme.of(context).colorScheme;

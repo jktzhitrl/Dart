@@ -103,6 +103,11 @@ service cloud.firestore {
         && onlyChanges(['correction', 'winnerId', 'version', 'updatedAt']);
     }
 
+    function registrationAdded() {
+      let list = request.resource.data.registrations;
+      return list[list.size() - 1];
+    }
+
     function versionBumped() {
       return request.resource.data.version == resource.data.version + 1;
     }
@@ -150,7 +155,11 @@ service cloud.firestore {
       allow create: if isAdmin()
         && request.resource.data.createdBy == uid()
         && request.resource.data.version == 1
-        && !request.resource.data.keys().hasAny(['trash']);
+        && !request.resource.data.keys().hasAny(['trash'])
+        && (request.resource.data.get('isDuo', false) == false ||
+          (request.resource.data.isDuo == true
+            && request.resource.data.format == 'groupsKnockout'
+            && request.resource.data.gameType in ['x301', 'x501', 'x701', 'x1001']));
 
       // Moving to the trash switches off public discovery. Restore the original
       // visibility and leave the complete tournament data untouched.
@@ -169,6 +178,7 @@ service cloud.firestore {
 
       allow update: if signedIn() && versionBumped() && activeTournament(tid)
         && request.resource.data.get('trash', null) == null
+        && request.resource.data.get('isDuo', false) == resource.data.get('isDuo', false)
         && unchanged(['createdBy', 'inviteCode', 'format', 'gameType', 'createdAt', 'id', 'isPublic'])
         && (
           // Turnierleitung: alles
@@ -177,10 +187,13 @@ service cloud.firestore {
           || (hasAccount() && (resource.data.isPublic || isMember(tid))
               && onlyChanges(['registrations', 'version'])
               && resource.data.status == 'registration'
+              && resource.data.get('duoTeams', []).size() == 0
               && request.resource.data.registrations.size() == resource.data.registrations.size() + 1
               && request.resource.data.registrations.hasAll(resource.data.registrations)
-              && request.resource.data.registrations[request.resource.data.registrations.size() - 1].id
-                  == userDoc().playerId)
+              && registrationAdded().id == userDoc().playerId
+              && (resource.data.get('isDuo', false) == false ||
+                (registrationAdded().keys().hasOnly(['id', 'name', 'seed'])
+                  && registrationAdded().get('seed', null) == null)))
           // Schreiber: nur Boardbelegung
           || (onlyChanges(['boards', 'version']) && isStaff(tid))
         );

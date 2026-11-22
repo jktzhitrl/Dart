@@ -279,6 +279,53 @@ void main() {
     expect((await tester.runAsync(() => repo.watchTournaments().first))!.single.isPublic, isTrue);
   });
 
+  testWidgets('Duo-Modus erfasst Losnummern und zeigt Teams vor der Gruppenauslosung', (tester) async {
+    final (services, repo) = await startApp(tester);
+    await login(tester, 'Alice');
+    await tester.tap(find.text('Turniere'));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('newTournament')));
+    await settle(tester);
+    await tester.enterText(find.byKey(const Key('tournamentName')), 'Duo-Cup');
+    await tester.tap(find.byKey(const Key('duoMode')));
+    await settle(tester);
+    expect(find.text('Gruppenphase + K.-o.'), findsWidgets);
+    expect(find.byKey(const Key('game-cricket')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('createTournament')));
+    await tester.tap(find.byKey(const Key('createTournament')));
+    await settle(tester);
+    await tester.runAsync(() async {
+      final admin = (await repo.getUser('demo-alice'))!;
+      var tournament = (await repo.watchTournaments().first).single;
+      for (var i = 1; i <= 4; i++) {
+        tournament = await services.tournaments.addParticipant(
+          admin, tournament, Participant(id: 'player$i', name: 'Person $i'),
+        );
+      }
+    });
+    await settle(tester);
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.byTooltip('Losnummer eintragen').at(i));
+      await settle(tester);
+      await tester.enterText(find.byKey(const Key('lotNumber')), '${i + 1}');
+      await tester.tap(find.byKey(const Key('saveLotNumber')));
+      await settle(tester);
+    }
+    await tester.tap(find.byKey(const Key('drawDuoTeams')));
+    await settle(tester);
+    expect(find.text('Gezogene Duos'), findsOneWidget);
+    expect(find.textContaining('Los '), findsNWidgets(2));
+    expect(find.byKey(const Key('publishButton')), findsNothing);
+    await tester.tap(find.byKey(const Key('drawButton')));
+    await settle(tester);
+    await tester.tap(find.byKey(const Key('drawConfirm')));
+    await settle(tester);
+    final tournament = (await tester.runAsync(() => repo.watchTournaments().first))!.single;
+    expect(tournament.plan!.participants, hasLength(2));
+    expect(tournament.plan!.participants.expand((p) => p.members), hasLength(4));
+    expect(find.byKey(const Key('publishButton')), findsOneWidget);
+  });
+
   testWidgets('Einladungscode öffnet das Turnier; Teilnahme erfolgt separat', (tester) async {
     final (services, repo) = await startApp(tester);
     await login(tester, 'Alice');

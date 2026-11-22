@@ -70,8 +70,12 @@ class TournamentService {
     required X01Rules rules,
     bool isPublic = true,
     int boardCount = 2,
+    bool isDuo = false,
   }) async {
     _require(by.role, Permission.createTournament);
+    if (isDuo && (format != TournamentFormat.groupsKnockout || !gameType.isX01)) {
+      throw ArgumentError('Duo-Turniere verwenden X01 mit Gruppenphase und K.-o.');
+    }
     final t = TournamentRecord(
       id: newId('t'),
       name: name.trim(),
@@ -79,6 +83,7 @@ class TournamentService {
       gameType: gameType,
       rules: rules,
       isPublic: isPublic,
+      isDuo: isDuo,
       status: TournamentStatus.registration,
       inviteCode: _inviteCode(isPublic: isPublic),
       createdBy: by.uid,
@@ -124,7 +129,7 @@ class TournamentService {
     final role = await roleIn(by, t);
     _require(role, Permission.joinTournament);
     if (player.id != by.playerId || player.uid != by.uid) throw PermissionDenied();
-    if (t.status != TournamentStatus.registration) {
+    if (t.status != TournamentStatus.registration || t.duoTeams.isNotEmpty) {
       throw StateError('Die Anmeldung ist geschlossen (Auslosung erfolgt).');
     }
     if (t.registrations.any((p) => p.id == player.id)) return t;
@@ -144,6 +149,9 @@ class TournamentService {
       AppUser by, TournamentRecord t, Participant p) async {
     final role = await roleIn(by, t);
     _require(role, Permission.manageParticipants);
+    if (t.status != TournamentStatus.registration || t.duoTeams.isNotEmpty) {
+      throw StateError('Die Teilnehmerliste ist geschlossen.');
+    }
     if (t.registrations.any((x) => x.id == p.id)) return t;
     final saved = await repo.saveTournament(t.copyWith(registrations: [...t.registrations, p]));
     await _log(by, 'tournament.addParticipant', tournamentId: t.id, detail: p.name);
@@ -153,7 +161,7 @@ class TournamentService {
   Future<TournamentRecord> removeParticipant(AppUser by, TournamentRecord t, String id) async {
     final role = await roleIn(by, t);
     _require(role, Permission.manageParticipants);
-    if (t.status != TournamentStatus.registration) {
+    if (t.status != TournamentStatus.registration || t.duoTeams.isNotEmpty) {
       throw StateError('Teilnehmer können nach der Auslosung nicht entfernt werden.');
     }
     final saved = await repo.saveTournament(
@@ -172,12 +180,86 @@ class TournamentService {
     return repo.saveTournament(t.copyWith(registrations: list));
   }
 
+  Future<TournamentRecord> setLotNumber(
+    AppUser by, TournamentRecord t, String playerId, int? number,
+  ) async {
+    _require(await roleIn(by, t), Permission.manageParticipants);
+    if (!t.isDuo || t.status != TournamentStatus.registration || t.duoTeams.isNotEmpty) {
+      throw StateError('Losnummern sind nur vor der Duo-Auslosung änderbar.');
+    }
+    if (!t.registrations.any((p) => p.id == playerId)) {
+      throw ArgumentError('Spieler nicht gefunden.');
+    }
+    if (number != null && (number < 1 ||
+        t.registrations.any((p) => p.id != playerId && p.lotNumber == number))) {
+      throw ArgumentError('Die Losnummer muss eine freie positive Zahl sein.');
+    }
+    return repo.saveTournament(t.copyWith(registrations: [
+      for (final p in t.registrations)
+        p.id == playerId ? p.copyWith(lotNumber: number, clearLot: number == null) : p,
+    ]));
+  }
+
+  Future<TournamentRecord> drawDuoTeams(AppUser by, TournamentRecord t, {Random? rng}) async {
+    _require(await roleIn(by, t), Permission.runDraw);
+    if (!t.isDuo || t.status != TournamentStatus.registration || t.published) {
+      throw StateError('Die Teams stehen bereits fest.');
+    }
+    if (t.registrations.length.isOdd) {
+      throw StateError('Für ein vollständiges Duo fehlt ein Spieler.');
+    }
+    if (t.registrations.length < 4) {
+      throw StateError('Für Gruppenphase und Finale braucht ihr mindestens vier Spieler.');
+    }
+    final missing = t.registrations.where((p) => p.lotNumber == null).map((p) => p.name).toList();
+    if (missing.isNotEmpty) throw StateError('Losnummer fehlt bei: ${missing.join(', ')}.');
+    final numbers = t.registrations.map((p) => p.lotNumber).toSet();
+    if (numbers.length != t.registrations.length || numbers.any((n) => n! < 1)) {
+      throw StateError('Jede Losnummer muss eindeutig und positiv sein.');
+    }
+    final shuffled = [...t.registrations]..shuffle(rng ?? Random.secure());
+    final teams = <Participant>[];
+    for (var i = 0; i < shuffled.length; i += 2) {
+      final a = shuffled[i];
+      final b = shuffled[i + 1];
+      teams.add(Participant(id: 'duo-${i ~/ 2 + 1}', name: '${a.name} & ${b.name}', members: [a, b]));
+    }
+    return repo.commitTournamentMatches(
+      t.copyWith(duoTeams: teams),
+      audit: _auditEntry(by, 'tournament.drawDuos', tournamentId: t.id),
+    );
+  }
+
+  Future<TournamentRecord> resetDuoTeams(AppUser by, TournamentRecord t) async {
+    _require(await roleIn(by, t), Permission.runDraw);
+    if (!t.isDuo || t.status != TournamentStatus.registration || t.published) {
+      throw StateError('Die Teilnehmerliste kann derzeit nicht geöffnet werden.');
+    }
+    return repo.saveTournament(t.copyWith(duoTeams: const []));
+  }
+
   /// Auslosung erstellen (Entwurf - noch nicht veröffentlicht).
   Future<TournamentRecord> draw(AppUser by, TournamentRecord t,
       {PlanOptions options = const PlanOptions(), Random? rng}) async {
     final role = await roleIn(by, t);
     _require(role, Permission.runDraw);
-    final plan = TournamentPlan.draw(t.format, t.registrations, options: options, rng: rng);
+    if (t.status != TournamentStatus.registration || t.published) {
+      throw StateError('Für dieses Turnier existiert bereits eine Auslosung.');
+    }
+    final entrants = t.isDuo ? t.duoTeams : t.registrations;
+    if (t.isDuo) {
+      if (entrants.length < 2) throw StateError('Zuerst die Duos auslosen.');
+      final groupCount = options.groupCount ??
+          ((entrants.length + (options.groupSize ?? 4) - 1) ~/ (options.groupSize ?? 4));
+      if (groupCount < 1 || entrants.length ~/ groupCount < 2) {
+        throw ArgumentError('Wähle eine Gruppengröße mit mindestens zwei Duos je Gruppe.');
+      }
+      if (options.advancePerGroup < 1 || options.advancePerGroup > entrants.length ~/ groupCount ||
+          groupCount * options.advancePerGroup < 2) {
+        throw ArgumentError('Für die K.-o.-Runde müssen mindestens zwei Duos weiterkommen.');
+      }
+    }
+    final plan = TournamentPlan.draw(t.format, entrants, options: options, rng: rng);
     final saved = await repo.saveTournament(
         t.copyWith(plan: plan, status: TournamentStatus.drawn, published: false));
     await _log(by, 'tournament.draw', tournamentId: t.id);
@@ -235,7 +317,7 @@ class TournamentService {
     if (planned == null || planned.aId != pm.aId || planned.bId != pm.bId) {
       throw VersionConflict('Die Begegnung hat sich geändert.');
     }
-    final names = t.plan!.names;
+    final entries = {for (final p in t.plan!.participants) p.id: p};
     final existing = await repo.watchMatches(tournamentId: t.id).first;
     if (existing.any((m) => m.planMatchId == pm.id && m.status != MatchStatus.confirmed)) {
       throw StateError('Diese Begegnung läuft bereits.');
@@ -243,7 +325,10 @@ class TournamentService {
     if (boardId != null && !t.boards.any((b) => b.id == boardId && b.currentMatchId == null)) {
       throw StateError('Dieses Board ist belegt oder existiert nicht.');
     }
-    final players = [for (final id in pm.playerIds) MatchPlayer(id, names[id] ?? id)];
+    final players = [
+      for (final id in pm.playerIds)
+        MatchPlayer(id, entries[id]?.name ?? id, members: entries[id]?.members ?? const []),
+    ];
     final now = DateTime.now().toUtc();
     final m = MatchRecord(
       id: newId('m'),
