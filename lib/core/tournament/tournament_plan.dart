@@ -95,6 +95,11 @@ class TournamentPlan {
     this.positions = const [],
   });
 
+  String? entryForPlayer(String? playerId) {
+    if (playerId == null) return null;
+    return participants.where((p) => p.represents(playerId)).firstOrNull?.id;
+  }
+
   Map<String, String> get names => {for (final p in participants) p.id: p.name};
   List<String> get ids => [for (final p in participants) p.id];
   List<String> get seedOrder {

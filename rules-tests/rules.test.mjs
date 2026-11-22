@@ -165,6 +165,26 @@ describe('Turniere', () => {
   });
 });
 
+describe('Duo-Auslosung', () => {
+  it('Losnummern und Teams ändert nur die Leitung; nach der Paarung schließt die Anmeldung', async () => {
+    const t = doc(db('admin'), 'tournaments/duo');
+    await assertFails(setDoc(t, tournament({ id: 'duo', isDuo: true })));
+    await assertSucceeds(setDoc(t, tournament({
+      id: 'duo', isDuo: true, format: 'groupsKnockout', isPublic: true,
+    })));
+    const pl = doc(db('pl'), 'tournaments/duo');
+    const me = { id: 'pl-pl', name: 'pl', seed: null };
+    await assertFails(updateDoc(pl, { registrations: [{ ...me, lotNumber: 4 }], version: 2 }));
+    await assertSucceeds(updateDoc(pl, { registrations: [me], version: 2 }));
+    await assertFails(updateDoc(pl, { duoTeams: [{ id: 'duo-1' }], version: 3 }));
+    await assertSucceeds(updateDoc(t, { duoTeams: [{ id: 'duo-1' }], version: 3 }));
+    await assertFails(updateDoc(doc(db('other'), 'tournaments/duo'), {
+      registrations: [me, { id: 'pl-other', name: 'Other', seed: null }], version: 4,
+    }));
+    await assertFails(updateDoc(t, { isDuo: false, version: 4 }));
+  });
+});
+
 describe('Turnier-Papierkorb', () => {
   it('nur Admins verschieben; Turnierlinks und Spiele werden beim Wiederherstellen erneut sichtbar', async () => {
     await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'matches/public'),

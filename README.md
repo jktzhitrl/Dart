@@ -17,7 +17,7 @@ und Echtzeit-Ansicht für alle Spieler auf dem eigenen Gerät.
 | Eingabe | **Modus A:** jeder Dart einzeln (interaktive Dartscheibe oder Tasten, Live-Zwischenstand der Aufnahme) · **Modus B:** nur Summe, optional Dartzahl/Doppelversuche · Undo, letzte Aufnahme bearbeiten, Pause, automatischer Spielerwechsel, Bust- und Checkout-Prüfung |
 | Checkout | regelbasierter Algorithmus (alle 1–3-Dart-Wege, Double/Master/Single Out), Varianten *Standard, Wenigste Darts, Lieblingsdoppel, Sichere Route, Alternative*, berücksichtigt die verbleibenden Darts der Aufnahme |
 | Statistik | 3-Dart-Ø, First-9, 180/140+/100+, Checkout-Quote/-Höchstwert/-Ø, Doppelquote je Feld, bestes/schlechtestes Leg, Siege/Niederlagen – je Spiel, Turnier, Karriere; nicht berechenbare Werte erscheinen als **„n/v“** statt erfundener Zahlen |
-| Turniere | K.-o., Doppel-K.-o. (mit Grand-Final-Reset), Jeder gegen Jeden, Gruppen + K.-o., Schweizer System, Liga (Hin-/Rückrunde), Freundschaftsspiele |
+| Turniere | K.-o., Doppel-K.-o. (mit Grand-Final-Reset), Jeder gegen Jeden, Gruppen + K.-o., Schweizer System, Liga (Hin-/Rückrunde), Freundschaftsspiele, X01-Duos (Losnummern, zufällige Teams, Gruppen + K.-o.) |
 | Auslosung | zufällig oder gesetzt, automatische Freilose, konfigurierbare Gruppengröße, **Prüfen/Tauschen vor Veröffentlichung**, automatischer Rundenfortschritt, Boards und Spielpausen |
 | Rollen | Administrator, Turnierleitung, Schreiber/Caller, Spieler, Zuschauer (global und pro Turnier) |
 | Live | Scoreboard in Echtzeit, TV-/Beamer-Vollbildmodus, Spielerportal, Turnierlink und QR-Code, Spielaufruf in der geöffneten App, fest gekoppelte Board-Tablets zur Punkteeingabe |

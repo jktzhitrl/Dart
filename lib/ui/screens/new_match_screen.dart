@@ -19,6 +19,7 @@ class RulesEditor extends StatelessWidget {
   final ValueChanged<bool>? onCutThroat;
   final ValueChanged<bool>? onSkipAhead;
   final bool allowTraining;
+  final bool x01Only;
 
   const RulesEditor({
     super.key,
@@ -31,6 +32,7 @@ class RulesEditor extends StatelessWidget {
     this.onCutThroat,
     this.onSkipAhead,
     this.allowTraining = true,
+    this.x01Only = false,
   });
 
   static const _bestOfOptions = [1, 3, 5, 7, 9, 11];
@@ -42,7 +44,7 @@ class RulesEditor extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Wrap(spacing: 8, runSpacing: 8, children: [
         for (final g in GameType.values)
-          if (allowTraining || g != GameType.training)
+          if ((allowTraining || g != GameType.training) && (!x01Only || g.isX01))
             ChoiceChip(
               key: Key('game-${g.name}'),
               label: Text(g.label),
